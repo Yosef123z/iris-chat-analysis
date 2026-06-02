@@ -1,0 +1,31 @@
+{
+  "business_id": "biz-cafe-demo",
+  "business_name": "Demo Cafe",
+  "knowledge_base": {
+    "menu_items": [
+      {
+        "menu_item_id": "coffee-1",
+        "name": "Iced Latte",
+        "description": "Espresso with cold milk and ice",
+        "price": 85,
+        "category": "Coffee",
+        "is_available": true
+      },
+      {
+        "menu_item_id": "dessert-1",
+        "name": "Honey Cake",
+        "description": "Layered honey cake slice",
+        "price": 95,
+        "category": "Desserts",
+        "is_available": true
+      }
+    ],
+    "faqs": [
+      {
+        "question": "WiFi",
+        "answer": "Free WiFi is available for cafe customers.",
+        "is_faq": true
+      }
+    ]
+  }
+}

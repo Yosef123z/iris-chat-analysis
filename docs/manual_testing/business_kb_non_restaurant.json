@@ -1,0 +1,31 @@
+{
+  "business_id": "biz-clinic-demo",
+  "business_name": "Demo Clinic",
+  "knowledge_base": {
+    "menu_items": [
+      {
+        "menu_item_id": "svc-1",
+        "name": "Dental Cleaning",
+        "description": "Professional teeth cleaning appointment",
+        "price": 500,
+        "category": "Dental",
+        "is_available": true
+      },
+      {
+        "menu_item_id": "svc-2",
+        "name": "Consultation",
+        "description": "Initial doctor consultation",
+        "price": 300,
+        "category": "Medical",
+        "is_available": true
+      }
+    ],
+    "faqs": [
+      {
+        "question": "Opening hours",
+        "answer": "The clinic is open from 10 AM to 8 PM.",
+        "is_faq": true
+      }
+    ]
+  }
+}

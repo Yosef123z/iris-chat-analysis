@@ -1,0 +1,22 @@
+{
+  "businessId": "biz-restaurant-demo",
+  "sessions": [
+    {
+      "sessionId": "manual-analysis-1",
+      "messages": [
+        {
+          "role": "customer",
+          "text": "My email is test@example.com and I want Classic Burger"
+        },
+        {
+          "role": "assistant",
+          "text": "تمام يا فندم، ضفت Classic Burger."
+        },
+        {
+          "role": "customer",
+          "text": "الأوردر وصل بارد"
+        }
+      ]
+    }
+  ]
+}

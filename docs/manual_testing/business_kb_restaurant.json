@@ -1,0 +1,39 @@
+{
+  "business_id": "biz-restaurant-demo",
+  "business_name": "Demo Restaurant",
+  "knowledge_base": {
+    "menu_items": [
+      {
+        "menu_item_id": "burger-1",
+        "name": "Classic Burger",
+        "description": "Beef burger with cheese",
+        "price": 120,
+        "category": "Burgers",
+        "is_available": true
+      },
+      {
+        "menu_item_id": "burger-2",
+        "name": "Crispy Chicken Burger",
+        "description": "Chicken burger",
+        "price": 110,
+        "category": "Burgers",
+        "is_available": false
+      },
+      {
+        "menu_item_id": "drink-1",
+        "name": "Lemon Mint",
+        "description": "Fresh drink",
+        "price": 45,
+        "category": "Drinks",
+        "is_available": true
+      }
+    ],
+    "faqs": [
+      {
+        "question": "Delivery time",
+        "answer": "Delivery takes 30 to 45 minutes.",
+        "is_faq": true
+      }
+    ]
+  }
+}
