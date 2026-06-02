@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IRIS Owner Analytics</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 720px; margin: 40px auto; }
+        textarea, input, button { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px; }
+        #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 12px; min-height: 180px; }
+    </style>
+</head>
+<body>
+    <h1>IRIS Owner Analytics</h1>
+    <p>Auxiliary owner analytics tool. It calls the official public endpoint only.</p>
+    <input id="sessionId" value="owner-session-1" aria-label="Session ID">
+    <textarea id="message" rows="3" aria-label="Message">Summarize today's report.</textarea>
+    <button onclick="sendMessage()">Send</button>
+    <div id="log"></div>
+    <script>
+        async function sendMessage() {
+            const payload = {
+                session_id: document.getElementById("sessionId").value,
+                message: document.getElementById("message").value
+            };
+            const response = await fetch("/api/v1/owner/chat", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+            document.getElementById("log").textContent = JSON.stringify(await response.json(), null, 2);
+        }
+    </script>
+</body>
+</html>

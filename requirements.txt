@@ -1,0 +1,25 @@
+# Core framework
+fastapi==0.135.1
+uvicorn==0.41.0
+pydantic==2.12.5
+pydantic-settings==2.13.1
+python-dotenv==1.2.2
+
+# Optional LLM-backed owner analytics
+openai==2.28.0
+langchain-openai==1.1.11
+langchain-core==1.2.19
+
+# HTTP/manual helpers
+httpx==0.28.1
+
+# Observability and security
+structlog==25.5.0
+slowapi==0.1.9
+
+# Text matching
+rapidfuzz==3.14.3
+
+# Testing
+pytest>=8.2
+pytest-asyncio>=1.0
