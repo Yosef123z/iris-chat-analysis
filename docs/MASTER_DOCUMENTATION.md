@@ -4,9 +4,9 @@
 
 IRIS provides the final Backend ↔ AI contract endpoints:
 
-- Business KB sync for full per-business knowledge replacement.
-- Customer chat with temporary session/cart memory and structured signals.
-- Post-session chat-batch analysis.
+- Business KB sync for full per-business knowledge replacement and in-memory vector indexing.
+- LLM-backed customer chat with RAG grounding, temporary session/cart memory, and structured signals.
+- LLM-backed post-session chat-batch analysis after PII redaction.
 - Standalone PII removal reused inside analysis.
 - Optional owner analytics over local markdown report files.
 
@@ -16,7 +16,7 @@ The service keeps runtime state in memory only. Restarting the server clears syn
 
 ### `POST /api/v1/business/knowledge-base/sync`
 
-Stores a full business KB in memory by `business_id`. Each call replaces the previous KB for that business.
+Stores a full business KB in memory by `business_id` and builds/replaces that business's in-memory vector index. Each call replaces the previous KB and index for that business only.
 
 ```json
 {
@@ -46,7 +46,7 @@ Stores a full business KB in memory by `business_id`. Each call replaces the pre
 
 ### `POST /api/v1/chat`
 
-Uses snake_case. The AI only uses the synced KB for the supplied `business_id`.
+Uses snake_case. The AI retrieves from the per-business vector index for the supplied `business_id`, builds a grounded prompt, calls the configured LLM provider, validates structured signals, and returns the final response.
 
 ```json
 {
@@ -77,7 +77,7 @@ Uses camelCase. V1 supports exactly one session per request.
 }
 ```
 
-PII is redacted before summaries, topics, and key moments are generated.
+PII is redacted before the LLM receives the transcript. Provider failure returns a controlled service error; model uncertainty can still produce valid fallback analysis values.
 
 ### `POST /api/v1/analysis/pii-remove`
 
@@ -92,10 +92,13 @@ PII is redacted before summaries, topics, and key moments are generated.
 - No SQLite or permanent AI-side persistence.
 - No semantic cache.
 - No public upload endpoint.
-- No static FAISS or local menu fallback in contract chat.
+- No static FAISS, global FAISS, or local menu fallback in contract chat.
 - No backend webhook calls for order, ticket, escalation, feedback, or analysis records.
+- Customer chat and chat-batch analysis do not return fake deterministic success when the LLM provider fails.
+- Automated tests inject fake LLM and fake embeddings providers and do not call OpenAI.
+- Real manual testing and backend integration require `OPENAI_API_KEY`.
 - Owner analytics is auxiliary and reads markdown files from `OWNER_ANALYTICS_REPORT_DIR`.
-- Tests are deterministic and do not require external network or OpenAI calls.
+- The `/tools` static pages are local manual-testing UIs only and call the same public endpoints used by backend integration.
 
 ## Removed Features
 

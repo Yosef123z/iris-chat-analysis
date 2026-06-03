@@ -1,23 +1,47 @@
 # Manual Contract Testing
 
-No .NET backend is required to test the AI contract endpoints manually.
+Manual testing uses the same public endpoints and code paths as backend integration.
+No hidden helper route bypasses KB sync, vector indexing, chat, or analysis logic.
 
-## Swagger Workflow
+## Automated Contract Tests
 
-1. Start the server:
+Run:
+
+```powershell
+python -m pytest -q
+```
+
+Automated tests inject fake LLM and fake embeddings providers. They verify contracts,
+per-business indexing, prompt grounding, business isolation, sanitization, and provider
+failure behavior without making OpenAI or network calls.
+
+## Manual AI Quality Tests
+
+Manual quality testing requires a real `OPENAI_API_KEY`.
+
+1. Set `OPENAI_API_KEY` in `.env`.
+2. Start the server:
 
    ```powershell
    python scripts/run_server.py
    ```
 
-2. Open `http://localhost:8000/docs`.
-3. POST one sample KB to `/api/v1/business/knowledge-base/sync`.
-4. POST to `/api/v1/chat` using the same `business_id`.
-5. Try product questions, price questions, adding an available item, confirming an order, unavailable items, complaints, human requests, and unknown business IDs.
-6. POST to `/api/v1/analysis/chat-batch`.
-7. Verify camelCase analysis fields and that PII does not appear in generated summaries/topics/key moments.
+3. Open `http://localhost:8000/docs`.
+4. POST a sample KB to `/api/v1/business/knowledge-base/sync`.
+5. Confirm sync succeeds; this builds the real per-business in-memory vector index.
+6. POST to `/api/v1/chat` using the same `business_id`.
+7. POST to `/api/v1/analysis/chat-batch`.
 
-State is in memory only. Restarting the server clears synced KB and session/cart state.
+The `/tools/customer_chat.html` and `/tools/owner_chat.html` pages may be used as local
+manual-testing UIs only. They must call the same public endpoints listed above.
+
+## Seed Script
+
+You can post a sample KB through the real public endpoint:
+
+```powershell
+python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/manual_testing/business_kb_restaurant.json
+```
 
 ## Sample Files
 
@@ -27,10 +51,32 @@ State is in memory only. Restarting the server clears synced KB and session/cart
 - `chat_examples.md`
 - `analysis_chat_batch_examples.json`
 
-## Seed Script
+## Manual Checklist
 
-You can post a sample KB through the real public endpoint:
+- Restaurant KB sync and chat.
+- Cafe KB sync and chat.
+- Clinic or non-restaurant KB sync and chat.
+- Missing KB chat response.
+- Product/service question.
+- Price question.
+- Add item/service to cart.
+- Confirm order or booking-style request.
+- Unavailable item.
+- Complaint.
+- Human request.
+- Complaint plus human request.
+- Unknown information not present in KB.
+- Business isolation across at least two `business_id` values.
+- Analysis with PII.
+- Analysis for a single-message session.
+- Provider failure behavior when possible.
 
-```powershell
-python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/manual_testing/business_kb_restaurant.json
-```
+Expected real AI behavior:
+
+- Customer replies are natural Egyptian Arabic by default.
+- Replies are grounded in the synced KB only.
+- No hallucinated items, prices, services, policies, or availability.
+- Order item names match canonical KB names exactly.
+- Unavailable items are not finalized.
+- Non-restaurant KBs do not receive restaurant-specific language.
+- Chat-batch summaries, topics, and key moments are meaningful and PII-free.

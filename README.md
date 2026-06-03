@@ -1,6 +1,6 @@
 # IRIS AI Contract API
 
-IRIS is a FastAPI AI service for backend integration. It exposes business knowledge-base sync, customer chat signals, chat-batch analysis, PII removal, and optional owner analytics.
+IRIS is a FastAPI AI service for backend integration. It exposes business knowledge-base sync, LLM-backed customer chat signals, LLM-backed chat-batch analysis, PII removal, and optional owner analytics.
 
 ## Public API
 
@@ -21,13 +21,13 @@ Auxiliary owner analytics routes may be used by the dashboard:
 
 ## Runtime Model
 
-- Business KB sync uses snake_case and stores data in memory by `business_id`.
-- Chat uses snake_case and only reads synced KB for the request business.
-- Analysis uses camelCase and applies PII redaction before analysis.
+- Business KB sync uses snake_case and builds/replaces an in-memory vector index by `business_id`.
+- Chat uses snake_case and performs LLM-backed RAG over only the synced KB for the request business.
+- Analysis uses camelCase and calls the LLM after PII redaction.
 - Session/cart memory is temporary and expires after roughly two hours.
 - The AI returns order, ticket, escalation, and feedback signals only.
 - The backend owns all permanent records and persistence.
-- There is no semantic cache, database, static menu fallback, hidden file route, public upload route, backend webhook creation, or voice interface.
+- There is no semantic cache, database, static menu fallback, global FAISS, hidden helper API route, public upload route, backend webhook creation, or voice interface.
 
 ## Setup
 
@@ -37,7 +37,7 @@ pip install -r requirements.txt
 python scripts/run_server.py
 ```
 
-`OPENAI_API_KEY` is optional for deterministic contract behavior, but required for LLM-backed owner analytics.
+`OPENAI_API_KEY` is required for real KB vector indexing, real customer chat, real chat-batch analysis, and LLM-backed owner analytics. Automated tests do not require it because they inject fake LLM and fake embeddings providers.
 
 Manual contract testing is documented in [docs/manual_testing/README.md](docs/manual_testing/README.md).
 
