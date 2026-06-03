@@ -74,9 +74,14 @@ python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/ma
 Expected real AI behavior:
 
 - Customer replies are natural Egyptian Arabic by default.
+- Common formal Arabic phrases are normalized toward Egyptian Arabic after the LLM response.
 - Replies are grounded in the synced KB only.
 - No hallucinated items, prices, services, policies, or availability.
 - Order item names match canonical KB names exactly.
+- Clear customer confirmation phrases force `order_finalized=true` only when a valid cart exists.
+- Informational product/service questions, such as price or details requests, do not start a cart.
 - Unavailable items are not finalized.
+- Attempts to order unavailable items return an empty `CreateOrder` details object for contract consistency.
+- Escalation-only messages request human handoff without creating a ticket; complaint plus escalation creates a high-priority ticket and handoff signal.
 - Non-restaurant KBs do not receive restaurant-specific language.
-- Chat-batch summaries, topics, and key moments are meaningful and PII-free.
+- Chat-batch summaries, topics, and key moments are meaningful and PII-free; empty topics or key moments may be supplemented from the redacted transcript.

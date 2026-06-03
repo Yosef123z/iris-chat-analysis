@@ -47,6 +47,7 @@ Stores a full business KB in memory by `business_id` and builds/replaces that bu
 ### `POST /api/v1/chat`
 
 Uses snake_case. The AI retrieves from the per-business vector index for the supplied `business_id`, builds a grounded prompt, calls the configured LLM provider, validates structured signals, and returns the final response.
+After the LLM returns, deterministic post-validation policies enforce contract-critical signals: explicit order confirmation finalizes only a valid cart, informational product/service questions do not create orders, unavailable item order attempts return an empty `CreateOrder` payload, escalation-only handoff does not create a ticket, and customer-facing Arabic is lightly normalized toward Egyptian Arabic.
 
 ```json
 {
@@ -78,6 +79,7 @@ Uses camelCase. V1 supports exactly one session per request.
 ```
 
 PII is redacted before the LLM receives the transcript. Provider failure returns a controlled service error; model uncertainty can still produce valid fallback analysis values.
+Analysis output is also post-validated: Egyptian Arabic summary wording is lightly normalized, complaint plus human-handoff sessions are ranked as complaint-led, and empty topics/key moments may be supplemented from the redacted transcript.
 
 ### `POST /api/v1/analysis/pii-remove`
 

@@ -252,6 +252,177 @@ def test_canonical_names_prices_and_cart_across_turns(client, fake_provider):
     assert "system_events" not in second
 
 
+def test_confirm_order_phrase_forces_finalization(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger. هل ترغب في إضافة أي شيء آخر؟",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "manual-order-1", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="تمام، هل ترغب في تأكيد الطلب؟",
+            order_detected=True,
+            order_finalized=False,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    data = chat(client, "biz-1", "manual-order-1", "تمام أكد الطلب")
+    assert data["order_detected"] is True
+    assert data["order_finalized"] is True
+    assert data["order_details"]["items"][0]["name"] == "Classic Burger"
+    assert "هل ترغب" not in data["reply"]
+
+
+def test_add_item_and_finalization_same_turn(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "manual-order-2", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Lemon Mint. هل ترغب في تأكيد الطلب؟",
+            order_detected=True,
+            order_finalized=False,
+            items=[OrderLineItem(name="Lemon Mint", quantity=1, price=45)],
+        )
+    )
+    data = chat(client, "biz-1", "manual-order-2", "تمام ضيف الليمون و بس كدة")
+    names = [item["name"] for item in data["order_details"]["items"]]
+    assert names == ["Classic Burger", "Lemon Mint"]
+    assert data["order_finalized"] is True
+    assert "اتأكد" in data["reply"]
+
+
+def test_finalization_after_cart_summary_phrase(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "manual-order-3", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(reply="إجمالي الطلب 120. هل ترغب في تأكيد الطلب؟", order_detected=True)
+    )
+    data = chat(client, "biz-1", "manual-order-3", "ايوه خلاص هو دا الطلب")
+    assert data["order_finalized"] is True
+    assert data["order_details"]["items"][0]["name"] == "Classic Burger"
+
+
+def test_informational_clinic_query_does_not_start_order(client, fake_provider):
+    sync(client, clinic_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="Dental Cleaning هو خدمة تنظيف الأسنان. هل ترغب في تأكيد الطلب؟",
+            order_detected=True,
+            items=[OrderLineItem(name="Dental Cleaning", quantity=1, price=500)],
+        )
+    )
+    data = chat(client, "clinic-1", "clinic-info-1", "قولي تفاصيل Dental Cleaning")
+    assert data["order_detected"] is False
+    assert data["order_finalized"] is False
+    assert data["order_details"] is None
+    assert "هل ترغب" not in data["reply"]
+
+
+def test_escalation_only_does_not_create_ticket(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="لو حابب، ممكن أساعدك في تقديم شكوى.",
+            ticket_detected=True,
+            ticket_details={
+                "subject": "طلب التحدث مع المدير",
+                "description": None,
+                "priority": "normal",
+                "category": "other",
+            },
+            escalation_requested=True,
+        )
+    )
+    data = chat(client, "biz-1", "manual-escalation-1", "عايز أكلم المدير")
+    assert data["ticket_detected"] is False
+    assert data["ticket_details"] is None
+    assert data["escalation_requested"] is True
+    assert "الإدارة" in data["reply"]
+    assert "تقديم شكوى" not in data["reply"]
+
+
+def test_complaint_plus_escalation_action_reply(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="هل ترغب في تقديم شكوى؟",
+            ticket_detected=True,
+            ticket_details={
+                "subject": "Complaint",
+                "description": None,
+                "priority": "normal",
+                "category": "other",
+            },
+            escalation_requested=True,
+        )
+    )
+    data = chat(
+        client,
+        "biz-1",
+        "manual-ticket-escalation-1",
+        "الأوردر وصل غلط وعايز أكلم المدير حالًا",
+    )
+    assert data["ticket_detected"] is True
+    assert data["escalation_requested"] is True
+    assert data["ticket_details"]["priority"] in {"high", "critical"}
+    assert data["ticket_details"]["category"] in {"wrong_order", "complaint"}
+    assert "هسجل المشكلة" in data["reply"]
+    assert "هل ترغب" not in data["reply"]
+
+
+def test_unavailable_item_returns_empty_order_details(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="عذرًا، Crispy Chicken Burger غير متوفر حاليًا.",
+            order_detected=True,
+            items=[OrderLineItem(name="Crispy Chicken Burger", quantity=1, price=110)],
+        )
+    )
+    data = chat(client, "biz-1", "manual-unavailable-1", "عايز Crispy Chicken Burger")
+    assert data["order_detected"] is True
+    assert data["order_finalized"] is False
+    assert data["order_details"]["items"] == []
+    assert data["order_details"]["total_amount"] == 0
+    assert "معلش" in data["reply"]
+    assert "مش متاح دلوقتي" in data["reply"]
+
+
+def test_customer_replies_are_egyptian_arabic_sanitized(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="عذرًا، تم إضافة Classic Burger. هل ترغب في إضافة أي شيء آخر؟ غير متوفر حاليًا.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    data = chat(client, "biz-1", "dialect-1", "عايز Classic Burger")
+    forbidden = ["هل ترغب", "عذرًا", "غير متوفر حاليًا", "تم إضافة"]
+    assert not any(term in data["reply"] for term in forbidden)
+
+
 def test_unavailable_and_invented_items_are_sanitized(client, fake_provider):
     sync(client, restaurant_kb())
     fake_provider.chat_outputs.append(
@@ -290,8 +461,8 @@ def test_ticket_category_normalization_and_reply_sanitization(client, fake_provi
     )
     data = chat(client, "biz-1", "support-1", "wrong order and need manager")
     assert data["ticket_detected"] is True
-    assert data["ticket_details"]["priority"] == "normal"
-    assert data["ticket_details"]["category"] == "other"
+    assert data["ticket_details"]["priority"] == "high"
+    assert data["ticket_details"]["category"] == "wrong_order"
     assert data["escalation_requested"] is True
     forbidden = ["backend", "api", "json", "contract", "rag", "vector", "system prompt"]
     assert not any(term in data["reply"].lower() for term in forbidden)
@@ -365,6 +536,111 @@ def test_analysis_chat_batch_calls_llm_after_pii_redaction(client, fake_provider
     assert "[EMAIL]" in model_prompt
     combined = " ".join([result["summary"], result["summaryAr"], *result["mainTopics"], *result["keyMoments"]])
     assert "test@example.com" not in combined
+
+
+def test_analysis_adds_topics_and_key_moments_for_complaint_handoff(client, fake_provider):
+    fake_provider.analysis_outputs.append(
+        {
+            "sessionId": "manual-analysis-1",
+            "summary": "Customer complained and asked for manager.",
+            "summaryAr": "العميل اشتكى وطلب المدير.",
+            "overallSentiment": {"score": -0.5, "label": "Negative"},
+            "mainIntent": "Complaint",
+            "intentsDetected": [{"name": "Complaint", "count": 1}],
+            "mainTopics": [],
+            "keyMoments": [],
+        }
+    )
+    response = client.post(
+        "/api/v1/analysis/chat-batch",
+        json={
+            "businessId": "biz-1",
+            "sessions": [
+                {
+                    "sessionId": "manual-analysis-1",
+                    "messages": [
+                        {"role": "customer", "text": "اسمي يوسف ورقمي 01012345678 وعايز Classic Burger"},
+                        {"role": "assistant", "text": "تمام يا فندم، ضفت Classic Burger."},
+                        {"role": "customer", "text": "الأوردر وصل بارد وعايز أكلم المدير"},
+                    ],
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()["results"][0]
+    assert result["mainTopics"]
+    assert result["keyMoments"]
+    assert any("Classic Burger" in topic for topic in result["mainTopics"])
+    assert any("وصل بارد" in moment for moment in result["keyMoments"])
+
+
+def test_analysis_summary_ar_is_egyptianized(client, fake_provider):
+    fake_provider.analysis_outputs.append(
+        {
+            "sessionId": "manual-analysis-2",
+            "summary": "Customer wants manager.",
+            "summaryAr": "العميل يريد التحدث إلى المدير بعد أن استلمه بارداً.",
+            "overallSentiment": {"score": -0.5, "label": "Negative"},
+            "mainIntent": "Complaint",
+            "intentsDetected": [{"name": "Complaint", "count": 1}],
+            "mainTopics": ["شكوى"],
+            "keyMoments": ["الأوردر وصل بارد"],
+        }
+    )
+    response = client.post(
+        "/api/v1/analysis/chat-batch",
+        json={
+            "businessId": "biz-1",
+            "sessions": [
+                {
+                    "sessionId": "manual-analysis-2",
+                    "messages": [{"role": "customer", "text": "الأوردر وصل بارد وعايز أكلم المدير"}],
+                }
+            ],
+        },
+    )
+    result = response.json()["results"][0]
+    assert "يريد التحدث" not in result["summaryAr"]
+    assert "استلمه بارداً" not in result["summaryAr"]
+    assert "عايز يكلم المدير" in result["summaryAr"]
+
+
+def test_analysis_complaint_handoff_intent_dominates(client, fake_provider):
+    fake_provider.analysis_outputs.append(
+        {
+            "sessionId": "manual-analysis-3",
+            "summary": "Customer ordered then complained.",
+            "summaryAr": "العميل طلب وبعدين اشتكى.",
+            "overallSentiment": {"score": -0.5, "label": "Negative"},
+            "mainIntent": "CreateOrder",
+            "intentsDetected": [
+                {"name": "CreateOrder", "count": 3},
+                {"name": "Complaint", "count": 1},
+            ],
+            "mainTopics": [],
+            "keyMoments": [],
+        }
+    )
+    response = client.post(
+        "/api/v1/analysis/chat-batch",
+        json={
+            "businessId": "biz-1",
+            "sessions": [
+                {
+                    "sessionId": "manual-analysis-3",
+                    "messages": [
+                        {"role": "customer", "text": "عايز Classic Burger"},
+                        {"role": "customer", "text": "الأوردر وصل بارد وعايز أكلم المدير"},
+                    ],
+                }
+            ],
+        },
+    )
+    result = response.json()["results"][0]
+    assert result["mainIntent"] == "Complaint"
+    assert result["intentsDetected"][0]["name"] == "Complaint"
+    assert any(intent["name"] == "RequestHumanAgent" for intent in result["intentsDetected"])
 
 
 def test_analysis_uncertainty_fallback_is_valid_but_provider_failure_is_503(client, fake_provider):
