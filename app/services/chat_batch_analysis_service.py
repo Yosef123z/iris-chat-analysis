@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import HTTPException
 
@@ -13,7 +14,9 @@ from app.models.analysis import (
     ChatAnalysisResult,
     ChatBatchAnalysisRequest,
     ChatBatchAnalysisResponse,
+    IntentCount,
 )
+from app.services.business_knowledge_service import normalize_text
 from app.services.pii_service import PIIService
 
 
@@ -31,6 +34,54 @@ _SUPPORTED_INTENTS = [
     "GeneralQuestion",
     "Unknown",
 ]
+_ANALYSIS_DIALECT_REPLACEMENTS = (
+    ("يريد التحدث إلى المدير", "عايز يكلم المدير"),
+    ("يريد التحدث مع المدير", "عايز يكلم المدير"),
+    ("استلمه بارداً", "وصله بارد"),
+    ("استلمه باردًا", "وصله بارد"),
+    ("استلمه باردا", "وصله بارد"),
+    ("العميل طلب التحدث", "العميل طلب يكلم"),
+    ("التحدث إلى", "يكلم"),
+    ("التحدث مع", "يكلم"),
+    ("تقديم شكوى", "تسجيل مشكلة"),
+)
+_COMPLAINT_TERMS = {
+    "شكوى",
+    "وصل بارد",
+    "وصل غلط",
+    "الأوردر غلط",
+    "الاوردر غلط",
+    "ناقص",
+    "متأخر",
+    "اتأخر",
+    "مشكلة",
+    "wrong order",
+    "cold",
+    "missing",
+    "late",
+    "complaint",
+    "problem",
+}
+_HUMAN_TERMS = {
+    "المدير",
+    "الإدارة",
+    "الادارة",
+    "موظف",
+    "خدمة العملاء",
+    "manager",
+    "human",
+    "representative",
+    "support",
+}
+_ORDER_TERMS = {
+    "عايز",
+    "طلب",
+    "ضفت",
+    "ضيف",
+    "order",
+    "ordered",
+    "add",
+}
 
 
 class ChatBatchAnalysisService:
@@ -63,9 +114,10 @@ class ChatBatchAnalysisService:
 
         result.session_id = session.session_id
         result.summary = self.pii.remove_pii_text(result.summary)
-        result.summary_ar = self.pii.remove_pii_text(result.summary_ar)
+        result.summary_ar = self._sanitize_summary_ar(self.pii.remove_pii_text(result.summary_ar))
         result.main_topics = [self.pii.remove_pii_text(topic) for topic in result.main_topics]
         result.key_moments = [self.pii.remove_pii_text(moment) for moment in result.key_moments]
+        result = self._apply_validation_policies(result, redacted_messages)
         result = ChatAnalysisResult.model_validate(result.model_dump())
         return ChatBatchAnalysisResponse(
             business_id=payload.business_id,
@@ -101,10 +153,15 @@ class ChatBatchAnalysisService:
         system_prompt = (
             "Analyze only the redacted transcript. Do not infer or include PII in summaries, topics, or key moments. "
             "Return one strict JSON object using camelCase fields only. summary must be concise English. summaryAr "
-            "must be concise Arabic. overallSentiment.score must be between -1.0 and 1.0. label must be Positive, "
-            "Neutral, or Negative. intentsDetected must use only supported intent names and be sorted by count "
-            "descending. mainIntent must equal intentsDetected[0].name. If uncertain, use Neutral score 0.0 and "
-            "Unknown intent with count 1, empty topics, and empty key moments."
+            "must be concise natural Egyptian Arabic, not Modern Standard Arabic. Extract meaningful mainTopics "
+            "and keyMoments when products, issues, or handoff actions are clear. Distinguish active/current intent "
+            "from historical context: if the session ends in a complaint or human handoff, Complaint should be the "
+            "mainIntent, and RequestHumanAgent must be included when the customer asks for a manager or person. "
+            "Only include CreateOrder for a clear order request/action, not merely because an item name appears in "
+            "a complaint. overallSentiment.score must be between -1.0 and 1.0. label must be Positive, Neutral, or "
+            "Negative. intentsDetected must use only supported intent names and be sorted by count descending. "
+            "mainIntent must equal intentsDetected[0].name. If truly uncertain, use Neutral score 0.0 and Unknown "
+            "intent with count 1."
         )
         user_prompt = (
             f"businessId: {business_id}\n"
@@ -117,3 +174,108 @@ class ChatBatchAnalysisService:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
+
+    @staticmethod
+    def _sanitize_summary_ar(text: str) -> str:
+        sanitized = text
+        for source, target in _ANALYSIS_DIALECT_REPLACEMENTS:
+            sanitized = sanitized.replace(source, target)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized
+
+    def _apply_validation_policies(
+        self,
+        result: ChatAnalysisResult,
+        messages: list[AnalysisMessage],
+    ) -> ChatAnalysisResult:
+        transcript = "\n".join(f"{message.role}: {message.text}" for message in messages)
+        if not result.main_topics:
+            result.main_topics = self._extract_topics(transcript)
+        if not result.key_moments:
+            result.key_moments = self._extract_key_moments(messages)
+
+        has_complaint = self._has_any(transcript, _COMPLAINT_TERMS)
+        has_human_request = self._has_any(transcript, _HUMAN_TERMS)
+        if has_complaint:
+            self._upsert_intent(result, "Complaint", make_first=True)
+        if has_human_request:
+            self._upsert_intent(result, "RequestHumanAgent")
+        if has_complaint and has_human_request:
+            self._upsert_intent(result, "Complaint", make_first=True)
+
+        result.summary_ar = self._sanitize_summary_ar(result.summary_ar)
+        return result
+
+    @staticmethod
+    def _has_any(text: str, terms: set[str]) -> bool:
+        normalized = normalize_text(text)
+        return any(normalize_text(term) in normalized for term in terms)
+
+    @staticmethod
+    def _upsert_intent(
+        result: ChatAnalysisResult,
+        name: str,
+        *,
+        make_first: bool = False,
+    ) -> None:
+        max_count = max((intent.count for intent in result.intents_detected), default=0)
+        for intent in result.intents_detected:
+            if intent.name == name:
+                if make_first:
+                    intent.count = max_count + 1
+                break
+        else:
+            result.intents_detected.append(
+                IntentCount(name=name, count=max_count + 1 if make_first else 1)
+            )
+        result.intents_detected = sorted(result.intents_detected, key=lambda item: item.count, reverse=True)
+        result.main_intent = result.intents_detected[0].name
+
+    @staticmethod
+    def _extract_topics(transcript: str) -> list[str]:
+        topics: list[str] = []
+        for match in re.finditer(r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}\b", transcript):
+            value = match.group(0).strip()
+            if value not in {"EMAIL", "PHONE", "NAME"} and value not in topics:
+                topics.append(value)
+        if ChatBatchAnalysisService._has_any(transcript, {"شكوى", "complaint", "مشكلة"}):
+            topics.append("شكوى")
+        if ChatBatchAnalysisService._has_any(transcript, {"المدير", "manager", "human"}):
+            topics.append("طلب المدير")
+        if ChatBatchAnalysisService._has_any(transcript, {"وصل بارد", "cold"}):
+            topics.append("الأوردر وصل بارد")
+        if ChatBatchAnalysisService._has_any(transcript, {"وصل غلط", "wrong order"}):
+            topics.append("الأوردر وصل غلط")
+        deduped: list[str] = []
+        for topic in topics:
+            if topic and topic not in deduped:
+                deduped.append(topic)
+        return deduped[:6]
+
+    @staticmethod
+    def _extract_key_moments(messages: list[AnalysisMessage]) -> list[str]:
+        moments: list[str] = []
+        for message in messages:
+            if message.role != "customer":
+                continue
+            text = message.text
+            if ChatBatchAnalysisService._has_any(text, _ORDER_TERMS):
+                item = ChatBatchAnalysisService._extract_first_title_case(text)
+                if item:
+                    moments.append(f"العميل طلب {item}")
+            if ChatBatchAnalysisService._has_any(text, {"وصل بارد", "cold"}):
+                moments.append("العميل قال إن الأوردر وصل بارد")
+            if ChatBatchAnalysisService._has_any(text, {"وصل غلط", "wrong order"}):
+                moments.append("العميل قال إن الأوردر وصل غلط")
+            if ChatBatchAnalysisService._has_any(text, _HUMAN_TERMS):
+                moments.append("العميل طلب يكلم المدير")
+        deduped: list[str] = []
+        for moment in moments:
+            if moment not in deduped:
+                deduped.append(moment)
+        return deduped[:6]
+
+    @staticmethod
+    def _extract_first_title_case(text: str) -> str | None:
+        match = re.search(r"\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}\b", text)
+        return match.group(0) if match else None

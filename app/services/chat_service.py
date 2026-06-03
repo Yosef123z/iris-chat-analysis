@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from fastapi import HTTPException
@@ -21,6 +22,7 @@ from app.models.chat import (
 from app.services.business_knowledge_service import (
     BusinessKnowledgeService,
     BusinessRetrievalContext,
+    normalize_text,
 )
 from app.services.session_memory import SessionMemoryStore, SessionState
 
@@ -49,6 +51,156 @@ _FORBIDDEN_REPLY_TERMS = {
     "python",
     "module",
 }
+_FINALIZATION_CUES = {
+    "أكد الطلب",
+    "اكد الطلب",
+    "تمام أكد",
+    "تمام اكد",
+    "كده تمام",
+    "كدة تمام",
+    "بس كده",
+    "بس كدة",
+    "وبس كده",
+    "و بس كدة",
+    "خلاص كده",
+    "خلاص كدة",
+    "ايوه خلاص",
+    "أيوه خلاص",
+    "هو ده الطلب",
+    "هو دا الطلب",
+    "لا كده تمام",
+    "لا كدة تمام",
+    "تمام كده",
+    "تمام كدة",
+    "كفاية كده",
+    "كفاية كدة",
+    "confirm order",
+    "that's all",
+    "that is all",
+    "yes that's it",
+    "yes confirm",
+    "confirm it",
+}
+_INFORMATIONAL_CUES = {
+    "قولي تفاصيل",
+    "قوللي تفاصيل",
+    "ايه تفاصيل",
+    "إيه تفاصيل",
+    "بكام",
+    "سعر",
+    "متاح",
+    "عندكم ايه",
+    "عندكم إيه",
+    "ايه المتاح",
+    "إيه المتاح",
+    "قوللي عن",
+    "قولي عن",
+    "معلومات عن",
+    "ينفع اعرف",
+    "ممكن اعرف",
+    "tell me about",
+    "details",
+    "price",
+    "how much",
+    "what do you have",
+    "available",
+    "information about",
+}
+_ORDER_ACTION_CUES = {
+    "عايز أطلب",
+    "عايز اطلب",
+    "اطلبلي",
+    "ضيف",
+    "ضف",
+    "حط",
+    "زود",
+    "خدلي",
+    "احجزلي",
+    "احجز",
+    "عايز أحجز",
+    "عايز احجز",
+    "order",
+    "add",
+    "book",
+    "reserve",
+    "put",
+    "i want",
+}
+_ESCALATION_CUES = {
+    "عايز أكلم المدير",
+    "عايز اكلم المدير",
+    "كلم المدير",
+    "اكلم حد من الإدارة",
+    "اكلم حد من الادارة",
+    "عايز حد من الإدارة",
+    "عايز حد من الادارة",
+    "حد من الإدارة",
+    "حد من الادارة",
+    "خدمة العملاء",
+    "عايز أكلم موظف",
+    "عايز اكلم موظف",
+    "حولني لموظف",
+    "حوّلني لموظف",
+    "عايز إنسان",
+    "عايز انسان",
+    "عايز حد يكلمني",
+    "manager",
+    "human agent",
+    "customer support",
+    "representative",
+    "talk to someone",
+    "speak to a person",
+}
+_COMPLAINT_CUES = {
+    "الأوردر وصل بارد",
+    "الاوردر وصل بارد",
+    "الأوردر وصل متأخر",
+    "الاوردر وصل متأخر",
+    "الخدمة سيئة",
+    "وصل بارد",
+    "وصل غلط",
+    "الأوردر غلط",
+    "الاوردر غلط",
+    "ناقص",
+    "اتأخر",
+    "تأخير",
+    "مش كويس",
+    "وحش",
+    "مشكلة",
+    "زعلان",
+    "مضايق",
+    "مش عاجبني",
+    "wrong order",
+    "cold",
+    "missing",
+    "late",
+    "bad",
+    "complaint",
+    "problem",
+    "upset",
+}
+_DIALECT_REPLACEMENTS = (
+    ("هل ترغب في تأكيد الطلب؟", "تحب تأكد الطلب؟"),
+    ("هل ترغب في إضافة أي شيء آخر؟", "تحب تضيف حاجة تانية؟"),
+    ("هل ترغب في إضافة أي شئ آخر؟", "تحب تضيف حاجة تانية؟"),
+    ("هل ترغب", "تحب"),
+    ("عذرًا", "معلش"),
+    ("عذراً", "معلش"),
+    ("غير متوفر حاليًا", "مش متاح دلوقتي"),
+    ("غير متوفر حالياً", "مش متاح دلوقتي"),
+    ("متوفر حاليًا", "متاح دلوقتي"),
+    ("متوفر حالياً", "متاح دلوقتي"),
+    ("تم إضافة", "ضفت"),
+    ("تمت إضافة", "ضفت"),
+    ("يريد التحدث إلى المدير", "عايز يكلم المدير"),
+    ("يريد التحدث", "عايز يتكلم"),
+    ("تقديم شكوى", "تسجيل المشكلة"),
+    ("استفسار", "سؤال"),
+    ("شيء آخر", "حاجة تانية"),
+    ("شيئ آخر", "حاجة تانية"),
+    ("حاليًا", "دلوقتي"),
+    ("حالياً", "دلوقتي"),
+)
 
 
 class CustomerChatLLMTicketDetails(BaseModel):
@@ -175,7 +327,10 @@ class ChatService:
             "policies, products, services, or availability. If information is not present, politely say in natural "
             "Egyptian Arabic that it is not available from the business data. Reply in natural Egyptian Arabic by "
             "default unless the customer explicitly asks for another language. Be concise, warm, professional, and "
-            "respectful. Never mention backend, API, contract, JSON, RAG, vector, embeddings, system, prompt, tools, "
+            "respectful. Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
+            "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
+            "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
+            "Never mention backend, API, contract, JSON, RAG, vector, embeddings, system, prompt, tools, "
             "or implementation details in the customer-facing reply. Treat menu_items as canonical sellable "
             "products/services/items for any business type. Use canonical item names exactly "
             "in order_details.items[].name. Do not translate canonical names. Respect is_available. Do not add or "
@@ -224,23 +379,49 @@ class ChatService:
             output.order_details,
         )
 
-        order_detected = output.order_detected or sanitized_details is not None
+        informational_only = self._is_informational_query(request.message)
+        finalization_requested = self._has_finalization_cue(request.message)
+        complaint_detected = self._has_complaint_cue(request.message)
+        escalation_detected = self._has_escalation_cue(request.message)
+
+        if informational_only and not unavailable_items:
+            sanitized_details = None
+
+        order_detected = output.order_detected or sanitized_details is not None or bool(unavailable_items)
         order_finalized = output.order_finalized
 
         if sanitized_details is not None:
-            state.cart_items = list(sanitized_details.items)
+            sanitized_details = self._merge_with_existing_cart(state, sanitized_details)
+            if sanitized_details.items:
+                state.cart_items = list(sanitized_details.items)
         elif order_finalized and state.cart_items:
             sanitized_details = self._cart_details(state)
             order_detected = True
 
+        if informational_only and not unavailable_items:
+            order_detected = False
+            order_finalized = False
+            sanitized_details = None
+
         if unavailable_items:
             order_finalized = False
             order_detected = True
-            sanitized_details = sanitized_details or OrderDetails(
+            sanitized_details = OrderDetails(
                 intent="CreateOrder",
-                items=[],
-                total_amount=0,
+                items=[] if sanitized_details is None else list(sanitized_details.items),
+                total_amount=0 if sanitized_details is None else sanitized_details.total_amount,
             )
+
+        if finalization_requested:
+            if sanitized_details is None and state.cart_items:
+                sanitized_details = self._cart_details(state)
+                order_detected = True
+            if sanitized_details is not None and sanitized_details.items:
+                order_detected = True
+                order_finalized = True
+            elif not unavailable_items and not informational_only:
+                order_detected = False
+                order_finalized = False
 
         if order_finalized:
             if sanitized_details is None or not sanitized_details.items:
@@ -251,12 +432,41 @@ class ChatService:
         if order_detected and sanitized_details is None and state.cart_items:
             sanitized_details = self._cart_details(state)
 
-        ticket_details = self._sanitize_ticket(output.ticket_details) if output.ticket_detected else None
-        reply = output.reply.strip()
+        ticket_detected = output.ticket_detected
+        escalation_requested = output.escalation_requested
+        ticket_details = self._sanitize_ticket(output.ticket_details) if ticket_detected else None
+        if escalation_detected and not complaint_detected:
+            ticket_detected = False
+            ticket_details = None
+            escalation_requested = True
+        elif complaint_detected:
+            ticket_detected = True
+            escalation_requested = escalation_requested or escalation_detected
+            ticket_details = self._complaint_ticket_details(
+                request.message,
+                high_priority=escalation_requested,
+                fallback=ticket_details,
+            )
+
+        reply = self._sanitize_dialect(output.reply.strip())
         if unavailable_items:
             reply = self._unavailable_reply(request.business_id, unavailable_items)
+        elif order_finalized and finalization_requested:
+            reply = "تمام يا فندم، كده الطلب اتأكد. هنبدأ نجهزه لحضرتك."
+        elif escalation_detected and complaint_detected:
+            reply = (
+                "معلش جدًا يا فندم على اللي حصل، هسجل المشكلة فورًا "
+                "وهحوّل حضرتك لحد من الإدارة يتابع معاك."
+            )
+        elif escalation_detected:
+            reply = "تمام يا فندم، هحوّل حضرتك لحد من الإدارة يتابع معاك."
+        elif complaint_detected:
+            reply = "معلش يا فندم، هسجل المشكلة لفريق الدعم عشان يتابعوها."
+        elif finalization_requested and not order_finalized:
+            reply = "تمام يا فندم، اختار الحاجة اللي تحب تطلبها الأول وأنا أساعدك."
         if not reply or self._reply_has_internal_terms(reply):
-            reply = self._safe_reply(order_detected, output.ticket_detected, output.escalation_requested)
+            reply = self._safe_reply(order_detected, ticket_detected, escalation_requested)
+        reply = self._sanitize_dialect(reply)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -264,12 +474,94 @@ class ChatService:
             order_detected=order_detected,
             order_finalized=order_finalized,
             order_details=sanitized_details if order_detected else None,
-            ticket_detected=output.ticket_detected,
+            ticket_detected=ticket_detected,
             ticket_details=ticket_details,
-            escalation_requested=output.escalation_requested,
+            escalation_requested=escalation_requested,
             feedback_requested=output.feedback_requested,
             processing_time_ms=self._elapsed_ms(start_time),
         )
+
+    @staticmethod
+    def _has_any_cue(message: str, cues: set[str]) -> bool:
+        normalized = normalize_text(message)
+        return any(normalize_text(cue) in normalized for cue in cues)
+
+    @classmethod
+    def _has_finalization_cue(cls, message: str) -> bool:
+        return cls._has_any_cue(message, _FINALIZATION_CUES)
+
+    @classmethod
+    def _has_complaint_cue(cls, message: str) -> bool:
+        return cls._has_any_cue(message, _COMPLAINT_CUES)
+
+    @classmethod
+    def _has_escalation_cue(cls, message: str) -> bool:
+        return cls._has_any_cue(message, _ESCALATION_CUES)
+
+    @classmethod
+    def _is_informational_query(cls, message: str) -> bool:
+        if not cls._has_any_cue(message, _INFORMATIONAL_CUES):
+            return False
+        return not cls._has_any_cue(message, _ORDER_ACTION_CUES)
+
+    @staticmethod
+    def _merge_with_existing_cart(state: SessionState, details: OrderDetails) -> OrderDetails:
+        if not state.cart_items or not details.items:
+            return details
+
+        detail_names = {item.name for item in details.items}
+        existing_names = {item.name for item in state.cart_items}
+        if existing_names.issubset(detail_names):
+            merged = ChatService._merge_duplicate_items(list(details.items))
+        else:
+            merged = ChatService._merge_duplicate_items([*state.cart_items, *details.items])
+
+        return OrderDetails(
+            intent=details.intent or "CreateOrder",
+            items=merged,
+            total_amount=sum(item.quantity * item.price for item in merged),
+        )
+
+    @staticmethod
+    def _complaint_ticket_details(
+        message: str,
+        *,
+        high_priority: bool,
+        fallback: TicketDetails | None,
+    ) -> TicketDetails:
+        category = ChatService._complaint_category(message)
+        priority = "high" if high_priority else (fallback.priority if fallback else "normal")
+        if priority not in _SUPPORTED_TICKET_PRIORITIES:
+            priority = "normal"
+        if high_priority and priority in {"low", "normal"}:
+            priority = "high"
+        return TicketDetails(
+            subject=fallback.subject if fallback else "شكوى عميل",
+            description=fallback.description if fallback and fallback.description else message,
+            priority=priority,  # type: ignore[arg-type]
+            category=category,  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _complaint_category(message: str) -> str:
+        normalized = normalize_text(message)
+        if any(normalize_text(term) in normalized for term in {"غلط", "wrong order"}):
+            return "wrong_order"
+        if any(normalize_text(term) in normalized for term in {"ناقص", "missing"}):
+            return "missing"
+        if any(normalize_text(term) in normalized for term in {"متأخر", "اتأخر", "تأخير", "late"}):
+            return "delivery"
+        if any(normalize_text(term) in normalized for term in {"بارد", "cold", "وحش", "bad"}):
+            return "quality"
+        return "complaint"
+
+    @staticmethod
+    def _sanitize_dialect(text: str) -> str:
+        sanitized = text
+        for source, target in _DIALECT_REPLACEMENTS:
+            sanitized = sanitized.replace(source, target)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized
 
     def _sanitize_order_details(
         self,
