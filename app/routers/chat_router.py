@@ -1,8 +1,9 @@
 """Chat and business knowledge-base contract routes."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.core.provider import get_business_knowledge_service, get_chat_service
+from app.core.llm_interface import AIProviderError, LLMProvider
+from app.core.provider import get_business_knowledge_service, get_chat_service, get_llm_provider
 from app.core.rate_limiter import limiter
 from app.models.business_kb import (
     BusinessKnowledgeSyncRequest,
@@ -24,9 +25,21 @@ async def sync_business_knowledge_base(
     request: Request,
     payload: BusinessKnowledgeSyncRequest,
     service: BusinessKnowledgeService = Depends(get_business_knowledge_service),
+    llm_provider: LLMProvider = Depends(get_llm_provider),
 ):
     del request
-    service.sync_business_kb(payload)
+    try:
+        await service.sync_business_kb(payload, llm_provider.get_embeddings_model())
+    except AIProviderError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Business knowledge indexing failed",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Business knowledge indexing failed",
+        ) from exc
     return BusinessKnowledgeSyncResponse()
 
 

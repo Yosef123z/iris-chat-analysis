@@ -1,11 +1,15 @@
-"""Contract-compliant customer chat orchestration."""
+"""LLM-backed customer chat orchestration over synced business KB."""
 
 from __future__ import annotations
 
-import re
+import json
 import time
-from collections import Counter
 
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
+from app.config import settings
+from app.core.llm_interface import AIProviderError, LLMProvider
 from app.models.business_kb import BusinessMenuItem
 from app.models.chat import (
     ChatRequest,
@@ -16,323 +20,370 @@ from app.models.chat import (
 )
 from app.services.business_knowledge_service import (
     BusinessKnowledgeService,
-    normalize_text,
+    BusinessRetrievalContext,
 )
 from app.services.session_memory import SessionMemoryStore, SessionState
 
-_ORDER_WORDS = {
-    "عايز",
-    "عاوز",
-    "اريد",
-    "اطلب",
-    "طلب",
-    "اضيف",
-    "ضيف",
-    "add",
-    "order",
-    "want",
-}
-_CONFIRM_WORDS = {
-    "اكد",
-    "أكد",
-    "تمام كده",
-    "خلص",
-    "confirm",
-    "done",
-    "ok",
-}
-_MENU_WORDS = {
-    "عندكم",
-    "ايه",
-    "منيو",
-    "منتجات",
-    "خدمات",
-    "اسعار",
-    "سعر",
-    "price",
-    "menu",
-    "products",
-    "services",
-}
-_COMPLAINT_WORDS = {
-    "شكوى",
-    "مشكله",
-    "مشكلة",
-    "بارد",
-    "غلط",
-    "متاخر",
-    "وحش",
-    "سيء",
+
+_SUPPORTED_TICKET_PRIORITIES = {"low", "normal", "high", "critical"}
+_SUPPORTED_TICKET_CATEGORIES = {
     "complaint",
-    "wrong",
-    "bad",
-    "cold",
-    "late",
-    "problem",
+    "quality",
+    "delivery",
+    "payment",
+    "wrong_order",
+    "missing",
+    "other",
 }
-_HUMAN_WORDS = {
-    "مدير",
-    "المدير",
-    "اداره",
-    "الإدارة",
-    "انسان",
-    "موظف",
-    "human",
-    "manager",
-    "agent",
+_FORBIDDEN_REPLY_TERMS = {
+    "backend",
+    "api",
+    "json",
+    "contract",
+    "rag",
+    "vector",
+    "embedding",
+    "system prompt",
+    "system",
+    "prompt",
+    "python",
+    "module",
 }
-_FEEDBACK_WORDS = {"تقييم", "قيم", "rating", "feedback"}
 
 
-def _contains_any(normalized_text: str, words: set[str]) -> bool:
-    return any(normalize_text(word) in normalized_text for word in words)
+class CustomerChatLLMTicketDetails(BaseModel):
+    subject: str = Field(default="Customer Support")
+    description: str | None = None
+    priority: str = "normal"
+    category: str | None = "other"
+
+
+class CustomerChatLLMOutput(BaseModel):
+    reply: str
+    order_detected: bool = False
+    order_finalized: bool = False
+    order_details: OrderDetails | None = None
+    ticket_detected: bool = False
+    ticket_details: CustomerChatLLMTicketDetails | None = None
+    escalation_requested: bool = False
+    feedback_requested: bool = False
 
 
 class ChatService:
-    """Generate replies and structured signals without backend side effects."""
+    """Generate customer replies and contract signals through grounded RAG."""
 
     def __init__(
         self,
         *,
         knowledge_service: BusinessKnowledgeService,
         memory_store: SessionMemoryStore,
+        llm_provider: LLMProvider,
     ) -> None:
         self.knowledge = knowledge_service
         self.memory = memory_store
+        self.llm_provider = llm_provider
 
     async def process_chat_message(self, request: ChatRequest) -> ChatResponse:
         start_time = time.time()
         kb = self.knowledge.get_business_kb(request.business_id)
-        if kb is None:
+        index = self.knowledge.get_business_index(request.business_id)
+        if kb is None or index is None:
             return ChatResponse(
                 session_id=request.session_id,
-                reply="معلش يا فندم، بيانات النشاط ده لسه مش متحمّلة عندي. من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعدك.",
+                reply=(
+                    "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
+                    "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
+                ),
                 processing_time_ms=self._elapsed_ms(start_time),
             )
 
         state = self.memory.get_or_create(request.session_id, request.business_id)
-        normalized = normalize_text(request.message)
-
-        complaint = _contains_any(normalized, _COMPLAINT_WORDS)
-        human_request = _contains_any(normalized, _HUMAN_WORDS)
-        feedback = _contains_any(normalized, _FEEDBACK_WORDS)
-
-        if complaint or human_request:
-            response = self._build_support_response(
-                request=request,
-                complaint=complaint,
-                human_request=human_request,
-                feedback=feedback,
-                start_time=start_time,
+        try:
+            context = await self.knowledge.retrieve_context(
+                request.business_id,
+                request.message,
+                self.llm_provider.get_embeddings_model(),
             )
-            self.memory.append_turn(state, request.message, response.reply)
-            if response.escalation_requested:
-                state.handoff_active = True
-            return response
-
-        if state.handoff_active:
-            response = ChatResponse(
-                session_id=request.session_id,
-                reply="طلبك متحوّل لفريق الدعم يا فندم، وحد من الفريق هيتابع مع حضرتك.",
-                escalation_requested=True,
-                processing_time_ms=self._elapsed_ms(start_time),
+            if context is None:
+                return ChatResponse(
+                    session_id=request.session_id,
+                    reply=(
+                        "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
+                        "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
+                    ),
+                    processing_time_ms=self._elapsed_ms(start_time),
+                )
+            llm_output = await self.llm_provider.structured_output(
+                self._build_messages(request, state, context),
+                model=settings.GPT_CHAT_MODEL,
+                output_model=CustomerChatLLMOutput,
+                temperature=0.2,
             )
-            self.memory.append_turn(state, request.message, response.reply)
-            return response
+        except AIProviderError as exc:
+            raise HTTPException(status_code=503, detail="AI response generation failed") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="AI response generation failed") from exc
 
-        if self._is_confirmation(normalized) and state.cart_items:
-            response = self._finalize_order_response(request, state, start_time)
-            self.memory.append_turn(state, request.message, response.reply)
-            return response
-
-        requested_item = self.knowledge.find_menu_item(request.business_id, request.message)
-        looks_like_order = self._looks_like_order(normalized)
-        if requested_item is not None and looks_like_order:
-            response = self._add_item_response(request, state, requested_item, start_time)
-            self.memory.append_turn(state, request.message, response.reply)
-            return response
-
-        response = self._answer_kb_question(request, start_time)
+        response = self._validate_output(request, state, llm_output, start_time)
         self.memory.append_turn(state, request.message, response.reply)
+        if response.escalation_requested:
+            state.handoff_active = True
         return response
 
-    def _looks_like_order(self, normalized: str) -> bool:
-        return _contains_any(normalized, _ORDER_WORDS)
-
-    def _is_confirmation(self, normalized: str) -> bool:
-        return _contains_any(normalized, _CONFIRM_WORDS)
-
-    def _add_item_response(
+    def _build_messages(
         self,
         request: ChatRequest,
         state: SessionState,
-        item: BusinessMenuItem,
-        start_time: float,
-    ) -> ChatResponse:
-        if not item.is_available:
-            alternatives = self.knowledge.alternatives_for(request.business_id, item)
-            alt_text = ""
-            if alternatives:
-                alt_text = f" المتاح بدلًا منه: {self.knowledge.summarize_items(alternatives)}."
-            details = OrderDetails(intent="CreateOrder", items=[], total_amount=0)
-            return ChatResponse(
-                session_id=request.session_id,
-                reply=f"معلش يا فندم، {item.name} مش متاح حاليًا.{alt_text}",
-                order_detected=True,
-                order_finalized=False,
-                order_details=details,
-                processing_time_ms=self._elapsed_ms(start_time),
-            )
-
-        quantity = self._extract_quantity(request.message)
-        line = OrderLineItem(
-            name=item.name,
-            quantity=quantity,
-            price=item.price,
-            notes=None,
-        )
-        self._merge_cart_item(state, line)
-        details = self._cart_details(state)
-        return ChatResponse(
-            session_id=request.session_id,
-            reply=f"تمام يا فندم، ضفت {quantity} {item.name}. تحب تضيف حاجة تانية ولا أأكد الطلب؟",
-            order_detected=True,
-            order_finalized=False,
-            order_details=details,
-            processing_time_ms=self._elapsed_ms(start_time),
-        )
-
-    def _finalize_order_response(
-        self,
-        request: ChatRequest,
-        state: SessionState,
-        start_time: float,
-    ) -> ChatResponse:
-        details = self._cart_details(state)
-        return ChatResponse(
-            session_id=request.session_id,
-            reply="تمام يا فندم، تم تأكيد الطلب. backend هيكمل إنشاء الطلب والتحقق من الأسعار والتوافر.",
-            order_detected=True,
-            order_finalized=True,
-            order_details=details,
-            processing_time_ms=self._elapsed_ms(start_time),
-        )
-
-    def _answer_kb_question(self, request: ChatRequest, start_time: float) -> ChatResponse:
-        menu_matches = self.knowledge.search_menu_items(request.business_id, request.message)
-        faq_matches = self.knowledge.search_faqs(request.business_id, request.message)
-        normalized = normalize_text(request.message)
-
-        if menu_matches:
-            summary = self.knowledge.summarize_items(menu_matches)
-            reply = f"المتاح عندنا يا فندم: {summary}. تحب تفاصيل عن أي اختيار؟"
-        elif faq_matches:
-            answer = faq_matches[0].answer
-            reply = f"أكيد يا فندم، {answer}"
-        elif _contains_any(normalized, _MENU_WORDS):
-            kb = self.knowledge.get_business_kb(request.business_id)
-            items = kb.available_items[:6] if kb else []
-            if items:
-                summary = self.knowledge.summarize_items(items)
-                reply = f"المتاح عندنا يا فندم: {summary}. تحب أساعدك تختار؟"
-            else:
-                reply = "معلش يا فندم، مفيش عناصر متاحة في بيانات النشاط حاليًا."
-        else:
-            reply = "معلش يا فندم، المعلومة دي مش متاحة عندي حاليًا من بيانات النشاط. ممكن تسألني عن المنتجات أو الخدمات أو الأسعار الموجودة عندي."
-
-        return ChatResponse(
-            session_id=request.session_id,
-            reply=reply,
-            processing_time_ms=self._elapsed_ms(start_time),
-        )
-
-    def _build_support_response(
-        self,
-        *,
-        request: ChatRequest,
-        complaint: bool,
-        human_request: bool,
-        feedback: bool,
-        start_time: float,
-    ) -> ChatResponse:
-        ticket_details = None
-        if complaint:
-            ticket_details = TicketDetails(
-                subject="Customer Complaint",
-                description=request.message,
-                priority="critical" if human_request else "high",
-                category=self._ticket_category(request.message),
-            )
-
-        if complaint and human_request:
-            reply = "معلش جدًا يا فندم، هنسجل المشكلة فورًا وفريق مختص هيتابع مع حضرتك."
-        elif complaint:
-            reply = "معلش يا فندم، هنسجل المشكلة لفريق الدعم عشان يتابعها."
-        else:
-            reply = "تمام يا فندم، هنوصل طلب حضرتك لفريق الدعم عشان يتابع معاك."
-
-        return ChatResponse(
-            session_id=request.session_id,
-            reply=reply,
-            ticket_detected=complaint,
-            ticket_details=ticket_details,
-            escalation_requested=human_request,
-            feedback_requested=feedback,
-            processing_time_ms=self._elapsed_ms(start_time),
-        )
-
-    @staticmethod
-    def _ticket_category(message: str) -> str:
-        normalized = normalize_text(message)
-        if any(word in normalized for word in ["توصيل", "متاخر", "late", "delivery"]):
-            return "delivery"
-        if any(word in normalized for word in ["غلط", "wrong"]):
-            return "wrong_order"
-        if any(word in normalized for word in ["دفع", "payment"]):
-            return "payment"
-        if any(word in normalized for word in ["ناقص", "missing"]):
-            return "missing"
-        if any(word in normalized for word in ["بارد", "جوده", "quality", "cold"]):
-            return "quality"
-        return "complaint"
-
-    @staticmethod
-    def _extract_quantity(message: str) -> int:
-        digit_match = re.search(r"\d+", message)
-        if digit_match:
-            return max(1, min(int(digit_match.group()), 50))
-        normalized = normalize_text(message)
-        words = {
-            "واحد": 1,
-            "اتنين": 2,
-            "اثنين": 2,
-            "تلاته": 3,
-            "ثلاثه": 3,
-            "اربعه": 4,
-            "خمسه": 5,
+        context: BusinessRetrievalContext,
+    ) -> list[dict[str, str]]:
+        context_payload = {
+            "business_id": context.business_id,
+            "business_name": context.business_name,
+            "retrieved_documents": [
+                {
+                    "id": item.document.id,
+                    "type": item.document.type,
+                    "title": item.document.title,
+                    "content": item.document.content,
+                    "metadata": item.document.metadata,
+                }
+                for item in context.documents
+            ],
+            "candidate_items": [
+                self._item_payload(item)
+                for item in context.candidate_items
+            ],
+            "relevant_faqs": [
+                {
+                    "question": faq.question,
+                    "answer": faq.answer,
+                    "is_faq": faq.is_faq,
+                }
+                for faq in context.relevant_faqs
+            ],
+            "current_cart": [
+                item.model_dump()
+                for item in state.cart_items
+            ],
+            "recent_history": state.messages[-10:],
+            "latest_customer_message": request.message,
         }
-        for word, quantity in words.items():
-            if word in normalized:
-                return quantity
-        return 1
+
+        system_prompt = (
+            "You are IRIS, a customer-facing digital employee for the specific business in the context. "
+            "Use only the supplied business knowledge context for this business_id. Do not invent facts, prices, "
+            "policies, products, services, or availability. If information is not present, politely say in natural "
+            "Egyptian Arabic that it is not available from the business data. Reply in natural Egyptian Arabic by "
+            "default unless the customer explicitly asks for another language. Be concise, warm, professional, and "
+            "respectful. Never mention backend, API, contract, JSON, RAG, vector, embeddings, system, prompt, tools, "
+            "or implementation details in the customer-facing reply. Treat menu_items as canonical sellable "
+            "products/services/items for any business type. Use canonical item names exactly "
+            "in order_details.items[].name. Do not translate canonical names. Respect is_available. Do not add or "
+            "finalize unavailable or invented items. Suggest available alternatives when possible. Only finalize "
+            "an order after explicit customer confirmation. order_finalized=true always implies order_detected=true. "
+            "Return ticket, escalation, and feedback signals separately. Do not create any backend records."
+        )
+        output_schema = {
+            "reply": "string",
+            "order_detected": "boolean",
+            "order_finalized": "boolean",
+            "order_details": {
+                "intent": "CreateOrder | ModifyOrder | CancelOrder | null",
+                "items": [{"name": "canonical name", "quantity": 1, "price": 0, "notes": None}],
+                "total_amount": 0,
+            },
+            "ticket_detected": "boolean",
+            "ticket_details": {
+                "subject": "string",
+                "description": "string | null",
+                "priority": "low | normal | high | critical",
+                "category": "complaint | quality | delivery | payment | wrong_order | missing | other",
+            },
+            "escalation_requested": "boolean",
+            "feedback_requested": "boolean",
+        }
+        user_prompt = (
+            "Business/customer context follows. Return only one strict JSON object matching this schema.\n\n"
+            f"SCHEMA:\n{json.dumps(output_schema, ensure_ascii=False)}\n\n"
+            f"CONTEXT:\n{json.dumps(context_payload, ensure_ascii=False)}"
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _validate_output(
+        self,
+        request: ChatRequest,
+        state: SessionState,
+        output: CustomerChatLLMOutput,
+        start_time: float,
+    ) -> ChatResponse:
+        sanitized_details, unavailable_items = self._sanitize_order_details(
+            request.business_id,
+            output.order_details,
+        )
+
+        order_detected = output.order_detected or sanitized_details is not None
+        order_finalized = output.order_finalized
+
+        if sanitized_details is not None:
+            state.cart_items = list(sanitized_details.items)
+        elif order_finalized and state.cart_items:
+            sanitized_details = self._cart_details(state)
+            order_detected = True
+
+        if unavailable_items:
+            order_finalized = False
+            order_detected = True
+            sanitized_details = sanitized_details or OrderDetails(
+                intent="CreateOrder",
+                items=[],
+                total_amount=0,
+            )
+
+        if order_finalized:
+            if sanitized_details is None or not sanitized_details.items:
+                order_finalized = False
+            else:
+                order_detected = True
+
+        if order_detected and sanitized_details is None and state.cart_items:
+            sanitized_details = self._cart_details(state)
+
+        ticket_details = self._sanitize_ticket(output.ticket_details) if output.ticket_detected else None
+        reply = output.reply.strip()
+        if unavailable_items:
+            reply = self._unavailable_reply(request.business_id, unavailable_items)
+        if not reply or self._reply_has_internal_terms(reply):
+            reply = self._safe_reply(order_detected, output.ticket_detected, output.escalation_requested)
+
+        return ChatResponse(
+            session_id=request.session_id,
+            reply=reply,
+            order_detected=order_detected,
+            order_finalized=order_finalized,
+            order_details=sanitized_details if order_detected else None,
+            ticket_detected=output.ticket_detected,
+            ticket_details=ticket_details,
+            escalation_requested=output.escalation_requested,
+            feedback_requested=output.feedback_requested,
+            processing_time_ms=self._elapsed_ms(start_time),
+        )
+
+    def _sanitize_order_details(
+        self,
+        business_id: str,
+        details: OrderDetails | None,
+    ) -> tuple[OrderDetails | None, list[BusinessMenuItem]]:
+        if details is None:
+            return None, []
+
+        sanitized_items: list[OrderLineItem] = []
+        unavailable_items: list[BusinessMenuItem] = []
+        for item in details.items:
+            kb_item = self.knowledge.find_menu_item(business_id, item.name, min_score=70)
+            if kb_item is None:
+                continue
+            if not kb_item.is_available:
+                unavailable_items.append(kb_item)
+                continue
+            sanitized_items.append(
+                OrderLineItem(
+                    name=kb_item.name,
+                    quantity=max(1, min(item.quantity, 50)),
+                    price=kb_item.price,
+                    notes=item.notes,
+                )
+            )
+
+        merged = self._merge_duplicate_items(sanitized_items)
+        if not merged and not unavailable_items:
+            return None, []
+        total = sum(item.quantity * item.price for item in merged)
+        return (
+            OrderDetails(
+                intent=details.intent or "CreateOrder",
+                items=merged,
+                total_amount=total,
+            ),
+            unavailable_items,
+        )
 
     @staticmethod
-    def _merge_cart_item(state: SessionState, line: OrderLineItem) -> None:
-        for existing in state.cart_items:
-            if existing.name == line.name and existing.notes == line.notes:
-                existing.quantity += line.quantity
-                existing.price = line.price
-                return
-        state.cart_items.append(line)
+    def _merge_duplicate_items(items: list[OrderLineItem]) -> list[OrderLineItem]:
+        merged: list[OrderLineItem] = []
+        for item in items:
+            for existing in merged:
+                if existing.name == item.name and existing.notes == item.notes:
+                    existing.quantity += item.quantity
+                    existing.price = item.price
+                    break
+            else:
+                merged.append(item)
+        return merged
+
+    @staticmethod
+    def _sanitize_ticket(details: CustomerChatLLMTicketDetails | None) -> TicketDetails | None:
+        if details is None:
+            return TicketDetails(subject="Customer Support", priority="normal", category="other")
+        priority = details.priority if details.priority in _SUPPORTED_TICKET_PRIORITIES else "normal"
+        category = details.category if details.category in _SUPPORTED_TICKET_CATEGORIES else "other"
+        return TicketDetails(
+            subject=details.subject or "Customer Support",
+            description=details.description,
+            priority=priority,  # type: ignore[arg-type]
+            category=category,  # type: ignore[arg-type]
+        )
+
+    def _unavailable_reply(self, business_id: str, unavailable_items: list[BusinessMenuItem]) -> str:
+        names = "، ".join(item.name for item in unavailable_items)
+        alternatives: list[BusinessMenuItem] = []
+        for item in unavailable_items:
+            alternatives.extend(self.knowledge.alternatives_for(business_id, item))
+        unique_alternatives: list[BusinessMenuItem] = []
+        for item in alternatives:
+            if item.name not in {existing.name for existing in unique_alternatives}:
+                unique_alternatives.append(item)
+        if unique_alternatives:
+            alt_text = self.knowledge.summarize_items(unique_alternatives[:3])
+            return f"معلش يا فندم، {names} مش متاح حاليًا. المتاح بدلًا منه: {alt_text}."
+        return f"معلش يا فندم، {names} مش متاح حاليًا."
+
+    @staticmethod
+    def _safe_reply(
+        order_detected: bool,
+        ticket_detected: bool,
+        escalation_requested: bool,
+    ) -> str:
+        if escalation_requested:
+            return "تمام يا فندم، هنوصل طلب حضرتك لفريق الدعم عشان يتابع معاك."
+        if ticket_detected:
+            return "معلش يا فندم، هنسجل المشكلة لفريق الدعم عشان يتابعها."
+        if order_detected:
+            return "تمام يا فندم، سجلت طلب حضرتك. تحب تضيف حاجة تانية؟"
+        return "معلش يا فندم، المعلومة دي مش متاحة عندي حاليًا من بيانات النشاط."
+
+    @staticmethod
+    def _reply_has_internal_terms(reply: str) -> bool:
+        normalized = reply.lower()
+        return any(term in normalized for term in _FORBIDDEN_REPLY_TERMS)
 
     @staticmethod
     def _cart_details(state: SessionState) -> OrderDetails:
         total = sum(item.quantity * item.price for item in state.cart_items)
-        return OrderDetails(
-            intent="CreateOrder",
-            items=list(state.cart_items),
-            total_amount=total,
-        )
+        return OrderDetails(intent="CreateOrder", items=list(state.cart_items), total_amount=total)
+
+    @staticmethod
+    def _item_payload(item: BusinessMenuItem) -> dict[str, object]:
+        return {
+            "menu_item_id": item.menu_item_id,
+            "name": item.name,
+            "description": item.description,
+            "price": item.price,
+            "category": item.category,
+            "is_available": item.is_available,
+        }
 
     @staticmethod
     def _elapsed_ms(start: float) -> int:

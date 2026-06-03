@@ -38,7 +38,15 @@ class TicketDetails(BaseModel):
     subject: str = Field(..., min_length=1)
     description: str | None = None
     priority: Literal["low", "normal", "high", "critical"] = "normal"
-    category: str | None = "other"
+    category: Literal[
+        "complaint",
+        "quality",
+        "delivery",
+        "payment",
+        "wrong_order",
+        "missing",
+        "other",
+    ] | None = "other"
 
 
 class ChatResponse(BaseModel):

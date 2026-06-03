@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import math
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable, Literal
 
 from rapidfuzz import fuzz
 
@@ -54,26 +56,279 @@ class StoredBusinessKnowledge:
         return [item for item in self.menu_items if item.is_available]
 
 
+@dataclass(frozen=True)
+class BusinessKnowledgeDocument:
+    id: str
+    type: Literal["menu_item", "faq", "knowledge_entry"]
+    title: str
+    content: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RetrievedKnowledgeDocument:
+    document: BusinessKnowledgeDocument
+    score: float
+
+
+@dataclass(frozen=True)
+class BusinessVectorIndex:
+    business_id: str
+    business_name: str
+    documents: list[BusinessKnowledgeDocument]
+    vectors: list[list[float]]
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class BusinessRetrievalContext:
+    business_id: str
+    business_name: str
+    documents: list[RetrievedKnowledgeDocument]
+    candidate_items: list[BusinessMenuItem]
+    relevant_faqs: list[BusinessFAQ]
+
+
 class BusinessKnowledgeService:
     """Temporary in-memory KB store keyed by business_id."""
 
     def __init__(self) -> None:
         self._store: dict[str, StoredBusinessKnowledge] = {}
+        self._indexes: dict[str, BusinessVectorIndex] = {}
 
-    def sync_business_kb(self, payload: BusinessKnowledgeSyncRequest) -> None:
-        self._store[payload.business_id] = StoredBusinessKnowledge(
+    async def sync_business_kb(
+        self,
+        payload: BusinessKnowledgeSyncRequest,
+        embeddings_model: Any,
+    ) -> None:
+        documents = self._build_documents(payload)
+        vectors = await self._embed_documents(embeddings_model, [doc.content for doc in documents])
+        if len(vectors) != len(documents):
+            raise ValueError("Embeddings count did not match document count")
+
+        updated_at = datetime.now(timezone.utc)
+        stored = StoredBusinessKnowledge(
             business_id=payload.business_id,
             business_name=payload.business_name,
             menu_items=list(payload.knowledge_base.menu_items),
             faqs=list(payload.knowledge_base.faqs),
-            updated_at=datetime.now(timezone.utc),
+            updated_at=updated_at,
         )
+        index = BusinessVectorIndex(
+            business_id=payload.business_id,
+            business_name=payload.business_name,
+            documents=documents,
+            vectors=vectors,
+            updated_at=updated_at,
+        )
+
+        self._store[payload.business_id] = stored
+        self._indexes[payload.business_id] = index
 
     def get_business_kb(self, business_id: str) -> StoredBusinessKnowledge | None:
         return self._store.get(business_id)
 
+    def get_business_index(self, business_id: str) -> BusinessVectorIndex | None:
+        return self._indexes.get(business_id)
+
     def clear(self) -> None:
         self._store.clear()
+        self._indexes.clear()
+
+    async def retrieve_context(
+        self,
+        business_id: str,
+        query: str,
+        embeddings_model: Any,
+        *,
+        limit: int = 6,
+    ) -> BusinessRetrievalContext | None:
+        kb = self.get_business_kb(business_id)
+        index = self.get_business_index(business_id)
+        if kb is None or index is None:
+            return None
+
+        vector_scores: list[float] = [0.0 for _ in index.documents]
+        if index.documents and index.vectors:
+            query_vector = await self._embed_query(embeddings_model, query)
+            vector_scores = [
+                self._cosine_similarity(query_vector, vector)
+                for vector in index.vectors
+            ]
+
+        scored: list[tuple[float, BusinessKnowledgeDocument]] = []
+        normalized_query = normalize_text(query)
+        for idx, document in enumerate(index.documents):
+            score = vector_scores[idx] if idx < len(vector_scores) else 0.0
+            searchable = normalize_text(f"{document.title} {document.content}")
+            if document.type == "menu_item":
+                item_name = normalize_text(str(document.metadata.get("name", "")))
+                category = normalize_text(str(document.metadata.get("category", "")))
+                if item_name and item_name in normalized_query:
+                    score += 1.0
+                if category and category in normalized_query:
+                    score += 0.45
+                score += fuzz.token_set_ratio(normalized_query, item_name) / 250
+                score += fuzz.partial_ratio(normalized_query, searchable) / 500
+            else:
+                score += fuzz.partial_ratio(normalized_query, searchable) / 400
+            scored.append((score, document))
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        top_docs = [
+            RetrievedKnowledgeDocument(document=doc, score=score)
+            for score, doc in scored[:limit]
+            if score > 0
+        ]
+
+        candidate_items = self._candidate_items_from_documents(kb, top_docs)
+        if not candidate_items:
+            candidate_items = self.search_menu_items(
+                business_id,
+                query,
+                available_only=False,
+                limit=limit,
+            )
+        if not candidate_items and self._looks_like_catalog_request(query):
+            candidate_items = kb.available_items[:limit]
+
+        relevant_faqs = self._faqs_from_documents(kb, top_docs)
+        if not relevant_faqs:
+            relevant_faqs = self.search_faqs(business_id, query, limit=3)
+
+        return BusinessRetrievalContext(
+            business_id=kb.business_id,
+            business_name=kb.business_name,
+            documents=top_docs,
+            candidate_items=candidate_items[:limit],
+            relevant_faqs=relevant_faqs[:3],
+        )
+
+    @staticmethod
+    async def _embed_documents(embeddings_model: Any, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        async_embed = getattr(embeddings_model, "aembed_documents", None)
+        if callable(async_embed):
+            return await async_embed(texts)
+        return await asyncio.to_thread(embeddings_model.embed_documents, texts)
+
+    @staticmethod
+    async def _embed_query(embeddings_model: Any, text: str) -> list[float]:
+        async_embed = getattr(embeddings_model, "aembed_query", None)
+        if callable(async_embed):
+            return await async_embed(text)
+        return await asyncio.to_thread(embeddings_model.embed_query, text)
+
+    @staticmethod
+    def _build_documents(payload: BusinessKnowledgeSyncRequest) -> list[BusinessKnowledgeDocument]:
+        documents: list[BusinessKnowledgeDocument] = []
+        for item in payload.knowledge_base.menu_items:
+            availability = "available" if item.is_available else "unavailable"
+            content = "\n".join(
+                part
+                for part in [
+                    f"Name: {item.name}",
+                    f"Description: {item.description or ''}",
+                    f"Category: {item.category or ''}",
+                    f"Price: {item.price}",
+                    f"Availability: {availability}",
+                ]
+                if part is not None
+            )
+            documents.append(
+                BusinessKnowledgeDocument(
+                    id=f"menu_item:{item.menu_item_id}",
+                    type="menu_item",
+                    title=item.name,
+                    content=content,
+                    metadata={
+                        "menu_item_id": item.menu_item_id,
+                        "name": item.name,
+                        "description": item.description,
+                        "price": item.price,
+                        "category": item.category,
+                        "is_available": item.is_available,
+                    },
+                )
+            )
+
+        for index, faq in enumerate(payload.knowledge_base.faqs):
+            documents.append(
+                BusinessKnowledgeDocument(
+                    id=f"faq:{index}:{normalize_text(faq.question)[:40]}",
+                    type="faq" if faq.is_faq else "knowledge_entry",
+                    title=faq.question,
+                    content=f"Question: {faq.question}\nAnswer: {faq.answer}",
+                    metadata={
+                        "question": faq.question,
+                        "answer": faq.answer,
+                        "is_faq": faq.is_faq,
+                    },
+                )
+            )
+        return documents
+
+    @staticmethod
+    def _cosine_similarity(left: list[float], right: list[float]) -> float:
+        if not left or not right:
+            return 0.0
+        length = min(len(left), len(right))
+        dot = sum(left[i] * right[i] for i in range(length))
+        left_norm = math.sqrt(sum(value * value for value in left[:length]))
+        right_norm = math.sqrt(sum(value * value for value in right[:length]))
+        if left_norm == 0 or right_norm == 0:
+            return 0.0
+        return dot / (left_norm * right_norm)
+
+    @staticmethod
+    def _candidate_items_from_documents(
+        kb: StoredBusinessKnowledge,
+        documents: list[RetrievedKnowledgeDocument],
+    ) -> list[BusinessMenuItem]:
+        by_id = {item.menu_item_id: item for item in kb.menu_items}
+        items: list[BusinessMenuItem] = []
+        for result in documents:
+            if result.document.type != "menu_item":
+                continue
+            item_id = result.document.metadata.get("menu_item_id")
+            item = by_id.get(str(item_id))
+            if item is not None and item not in items:
+                items.append(item)
+        return items
+
+    @staticmethod
+    def _faqs_from_documents(
+        kb: StoredBusinessKnowledge,
+        documents: list[RetrievedKnowledgeDocument],
+    ) -> list[BusinessFAQ]:
+        faqs: list[BusinessFAQ] = []
+        for result in documents:
+            if result.document.type not in {"faq", "knowledge_entry"}:
+                continue
+            question = result.document.metadata.get("question")
+            for faq in kb.faqs:
+                if faq.question == question and faq not in faqs:
+                    faqs.append(faq)
+        return faqs
+
+    @staticmethod
+    def _looks_like_catalog_request(query: str) -> bool:
+        normalized = normalize_text(query)
+        terms = {
+            "menu",
+            "products",
+            "services",
+            "items",
+            "price",
+            "prices",
+            "منيو",
+            "منتجات",
+            "خدمات",
+            "اسعار",
+            "سعر",
+        }
+        return any(normalize_text(term) in normalized for term in terms)
 
     def find_menu_item(
         self,

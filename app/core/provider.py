@@ -41,12 +41,30 @@ def get_chat_service() -> ChatService:
     return ChatService(
         knowledge_service=get_business_knowledge_service(),
         memory_store=get_session_memory_store(),
+        llm_provider=get_llm_provider(),
     )
 
 
 @lru_cache
 def get_chat_batch_analysis_service() -> ChatBatchAnalysisService:
-    return ChatBatchAnalysisService(pii_service=get_pii_service())
+    return ChatBatchAnalysisService(
+        pii_service=get_pii_service(),
+        llm_provider=get_llm_provider(),
+    )
+
+
+def clear_provider_caches() -> None:
+    """Clear cached providers/services, mainly for tests and local reloads."""
+
+    get_llm_provider.cache_clear()
+    get_business_knowledge_service.cache_clear()
+    get_session_memory_store.cache_clear()
+    get_pii_service.cache_clear()
+    get_chat_service.cache_clear()
+    get_chat_batch_analysis_service.cache_clear()
+    get_analytics_service.cache_clear()
+    get_owner_chat_service.cache_clear()
+    get_health_service.cache_clear()
 
 
 @lru_cache
@@ -120,4 +138,5 @@ __all__ = [
     "get_analytics_service",
     "get_owner_chat_service",
     "get_health_service",
+    "clear_provider_caches",
 ]

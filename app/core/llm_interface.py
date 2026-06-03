@@ -1,4 +1,4 @@
-"""Provider abstraction for optional LLM-backed auxiliary features."""
+"""Provider abstraction for LLM-backed contract features."""
 
 from __future__ import annotations
 
@@ -16,6 +16,14 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+
+class AIProviderError(RuntimeError):
+    """Base exception for provider failures that should be surfaced as 503."""
+
+
+class AIProviderConfigurationError(AIProviderError):
+    """Raised when required provider configuration is missing."""
 
 
 async def retry_with_backoff(
@@ -42,7 +50,7 @@ async def retry_with_backoff(
             )
             if attempt < max_retries - 1:
                 await asyncio.sleep(2**attempt)
-    raise last_exception  # type: ignore[misc]
+    raise AIProviderError(str(last_exception)) from last_exception
 
 
 class LLMProvider(ABC):
@@ -73,9 +81,15 @@ class LLMProvider(ABC):
 
 class OpenAIProvider(LLMProvider):
     def __init__(self):
-        api_key = settings.OPENAI_API_KEY or "sk-placeholder-for-local-contract-tests"
-        self.client = AsyncOpenAI(api_key=api_key)
-        self._embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        self.api_key = settings.OPENAI_API_KEY.strip()
+        self.client = AsyncOpenAI(api_key=self.api_key) if self.api_key else None
+        self._embeddings = (
+            OpenAIEmbeddings(openai_api_key=self.api_key) if self.api_key else None
+        )
+
+    def _require_configured(self) -> None:
+        if not self.api_key or self.client is None or self._embeddings is None:
+            raise AIProviderConfigurationError("OPENAI_API_KEY is required for this endpoint")
 
     async def chat(
         self,
@@ -84,7 +98,10 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 1024,
     ) -> str:
+        self._require_configured()
+
         async def _request():
+            assert self.client is not None
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -102,7 +119,10 @@ class OpenAIProvider(LLMProvider):
         output_model: Type[T],
         temperature: float = 0.0,
     ) -> T:
+        self._require_configured()
+
         async def _request():
+            assert self.client is not None
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -114,4 +134,6 @@ class OpenAIProvider(LLMProvider):
         return await retry_with_backoff(_request)
 
     def get_embeddings_model(self) -> Embeddings:
+        self._require_configured()
+        assert self._embeddings is not None
         return self._embeddings

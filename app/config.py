@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = Field(
         "",
-        description="Optional for deterministic local tests; required for LLM-backed runtime features.",
+        description="Required for real KB indexing, customer chat, and chat-batch analysis runtime.",
     )
     GPT_CHAT_MODEL: str = "gpt-4o-mini"
     INTENT_MODEL: str = "gpt-4o-mini"

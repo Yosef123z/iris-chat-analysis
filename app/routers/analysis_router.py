@@ -24,7 +24,7 @@ async def chat_batch_endpoint(
     service: ChatBatchAnalysisService = Depends(get_chat_batch_analysis_service),
 ):
     del request
-    return service.analyze(payload)
+    return await service.analyze(payload)
 
 
 @router.post("/pii-remove", response_model=PIIRemoveResult)
