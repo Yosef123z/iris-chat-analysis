@@ -11,6 +11,7 @@ from app.services.chat_service import ChatService
 from app.services.health_service import HealthCheckService
 from app.services.owner_chat_service import OwnerChatService
 from app.services.pii_service import PIIService
+from app.services.report_generation_service import ReportGenerationService
 from app.services.session_memory import SessionMemoryStore
 
 ACTIVE_PROVIDER = "openai"
@@ -53,6 +54,11 @@ def get_chat_batch_analysis_service() -> ChatBatchAnalysisService:
     )
 
 
+@lru_cache
+def get_report_generation_service() -> ReportGenerationService:
+    return ReportGenerationService(llm_provider=get_llm_provider())
+
+
 def clear_provider_caches() -> None:
     """Clear cached providers/services, mainly for tests and local reloads."""
 
@@ -62,6 +68,7 @@ def clear_provider_caches() -> None:
     get_pii_service.cache_clear()
     get_chat_service.cache_clear()
     get_chat_batch_analysis_service.cache_clear()
+    get_report_generation_service.cache_clear()
     get_analytics_service.cache_clear()
     get_owner_chat_service.cache_clear()
     get_health_service.cache_clear()
@@ -113,6 +120,7 @@ session_memory_store: SessionMemoryStore = _LazyProxy(get_session_memory_store) 
 pii_service: PIIService = _LazyProxy(get_pii_service)  # type: ignore[assignment]
 chat_service: ChatService = _LazyProxy(get_chat_service)  # type: ignore[assignment]
 chat_batch_analysis_service: ChatBatchAnalysisService = _LazyProxy(get_chat_batch_analysis_service)  # type: ignore[assignment]
+report_generation_service: ReportGenerationService = _LazyProxy(get_report_generation_service)  # type: ignore[assignment]
 analytics_service: AnalyticsService = _LazyProxy(get_analytics_service)  # type: ignore[assignment]
 owner_chat_service: OwnerChatService = _LazyProxy(get_owner_chat_service)  # type: ignore[assignment]
 health_service: HealthCheckService = _LazyProxy(get_health_service)  # type: ignore[assignment]
@@ -126,6 +134,7 @@ __all__ = [
     "pii_service",
     "chat_service",
     "chat_batch_analysis_service",
+    "report_generation_service",
     "analytics_service",
     "owner_chat_service",
     "health_service",
@@ -135,6 +144,7 @@ __all__ = [
     "get_pii_service",
     "get_chat_service",
     "get_chat_batch_analysis_service",
+    "get_report_generation_service",
     "get_analytics_service",
     "get_owner_chat_service",
     "get_health_service",

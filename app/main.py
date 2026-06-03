@@ -36,7 +36,7 @@ _API_KEY_EXEMPT_PATHS = {
 
 app = FastAPI(
     title="IRIS AI Contract API",
-    description="Business KB sync, customer chat signals, PII removal, and chat-batch analysis.",
+    description="Business KB sync, customer chat signals, PII removal, chat-batch analysis, and report generation.",
     version=settings.APP_VERSION,
     lifespan=lifespan,
 )

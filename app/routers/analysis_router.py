@@ -2,7 +2,11 @@
 
 from fastapi import APIRouter, Depends, Request
 
-from app.core.provider import get_chat_batch_analysis_service, get_pii_service
+from app.core.provider import (
+    get_chat_batch_analysis_service,
+    get_pii_service,
+    get_report_generation_service,
+)
 from app.core.rate_limiter import limiter
 from app.models.analysis import (
     ChatBatchAnalysisRequest,
@@ -10,8 +14,10 @@ from app.models.analysis import (
     PIIRemoveRequest,
     PIIRemoveResult,
 )
+from app.models.report import ReportGenerationRequest, ReportGenerationResponse
 from app.services.chat_batch_analysis_service import ChatBatchAnalysisService
 from app.services.pii_service import PIIService
+from app.services.report_generation_service import ReportGenerationService
 
 router = APIRouter(prefix="/api/v1/analysis", tags=["Analysis Contract"])
 
@@ -36,3 +42,14 @@ async def pii_remove_endpoint(
 ):
     del request
     return service.remove_pii(payload.text)
+
+
+@router.post("/report/generate", response_model=ReportGenerationResponse)
+@limiter.limit("60/minute")
+async def report_generation_endpoint(
+    request: Request,
+    payload: ReportGenerationRequest,
+    service: ReportGenerationService = Depends(get_report_generation_service),
+):
+    del request
+    return await service.generate_report(payload)
