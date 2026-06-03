@@ -81,6 +81,34 @@ _FINALIZATION_CUES = {
     "yes confirm",
     "confirm it",
 }
+_CANCEL_CUES = {
+    "الغى الاوردر",
+    "كنسل الاوردر",
+    "إلغاء الأوردر",
+    "كنسل الأوردر",
+    "الغي الاوردر",
+    "ألغي الأوردر",
+    "الغى الطلب",
+    "كنسل الطلب",
+    "إلغاء الطلب",
+    "كنسلة الطلب",
+    "الغي الطلب",
+    "ألغي الطلب",
+    "عايز الغي",
+    "عايز اكنسل",
+    "عايز ألغى",
+    "عايز ألغي",
+    "خلاص الغي",
+    "خلاص كنسل",
+    "خلاص ألغي",
+    "بلاش الطلب",
+    "مش عايز الطلب",
+    "مش عاوز الطلب",
+    "cancel order",
+    "cancel it",
+    "cancel my order",
+    "forget the order",
+}
 _INFORMATIONAL_CUES = {
     "قولي تفاصيل",
     "قوللي تفاصيل",
@@ -178,6 +206,17 @@ _COMPLAINT_CUES = {
     "complaint",
     "problem",
     "upset",
+}
+_INFORMATIONAL_ORDER_REPLY_CUES = {
+    "أضيفها لطلبك",
+    "أضيفه لطلبك",
+    "أضيفها للطلب",
+    "أضيفه للطلب",
+    "أضيفها للأوردر",
+    "أضيفه للأوردر",
+    "تحب أضيف",
+    "تأكيد الطلب",
+    "تأكد الطلب",
 }
 _DIALECT_REPLACEMENTS = (
     ("هل ترغب في تأكيد الطلب؟", "تحب تأكد الطلب؟"),
@@ -381,8 +420,15 @@ class ChatService:
 
         informational_only = self._is_informational_query(request.message)
         finalization_requested = self._has_finalization_cue(request.message)
+        cancel_requested = self._has_cancel_cue(request.message)
         complaint_detected = self._has_complaint_cue(request.message)
         escalation_detected = self._has_escalation_cue(request.message)
+
+        if sanitized_details is None and output.order_detected:
+            unavailable_items = self._unavailable_items_from_message(
+                request.business_id,
+                request.message,
+            )
 
         if informational_only and not unavailable_items:
             sanitized_details = None
@@ -432,6 +478,12 @@ class ChatService:
         if order_detected and sanitized_details is None and state.cart_items:
             sanitized_details = self._cart_details(state)
 
+        if cancel_requested:
+            state.cart_items = []
+            order_detected = False
+            order_finalized = False
+            sanitized_details = None
+
         ticket_detected = output.ticket_detected
         escalation_requested = output.escalation_requested
         ticket_details = self._sanitize_ticket(output.ticket_details) if ticket_detected else None
@@ -449,7 +501,12 @@ class ChatService:
             )
 
         reply = self._sanitize_dialect(output.reply.strip())
-        if unavailable_items:
+        if cancel_requested:
+            reply = self._cancel_reply(
+                complaint_detected=complaint_detected,
+                escalation_detected=escalation_detected,
+            )
+        elif unavailable_items:
             reply = self._unavailable_reply(request.business_id, unavailable_items)
         elif order_finalized and finalization_requested:
             reply = "تمام يا فندم، كده الطلب اتأكد. هنبدأ نجهزه لحضرتك."
@@ -467,6 +524,8 @@ class ChatService:
         if not reply or self._reply_has_internal_terms(reply):
             reply = self._safe_reply(order_detected, ticket_detected, escalation_requested)
         reply = self._sanitize_dialect(reply)
+        if informational_only and not unavailable_items and not cancel_requested:
+            reply = self._sanitize_informational_reply(reply)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -491,6 +550,10 @@ class ChatService:
         return cls._has_any_cue(message, _FINALIZATION_CUES)
 
     @classmethod
+    def _has_cancel_cue(cls, message: str) -> bool:
+        return cls._has_any_cue(message, _CANCEL_CUES)
+
+    @classmethod
     def _has_complaint_cue(cls, message: str) -> bool:
         return cls._has_any_cue(message, _COMPLAINT_CUES)
 
@@ -503,6 +566,16 @@ class ChatService:
         if not cls._has_any_cue(message, _INFORMATIONAL_CUES):
             return False
         return not cls._has_any_cue(message, _ORDER_ACTION_CUES)
+
+    def _unavailable_items_from_message(
+        self,
+        business_id: str,
+        message: str,
+    ) -> list[BusinessMenuItem]:
+        item = self.knowledge.find_menu_item(business_id, message, min_score=70)
+        if item is None or item.is_available:
+            return []
+        return [item]
 
     @staticmethod
     def _merge_with_existing_cart(state: SessionState, details: OrderDetails) -> OrderDetails:
@@ -562,6 +635,44 @@ class ChatService:
             sanitized = sanitized.replace(source, target)
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
         return sanitized
+
+    @staticmethod
+    def _cancel_reply(*, complaint_detected: bool, escalation_detected: bool) -> str:
+        if complaint_detected and escalation_detected:
+            return (
+                "تمام يا فندم، لغيتلك الطلب وهسجل المشكلة فورًا "
+                "وهحوّل حضرتك لحد من الإدارة يتابع معاك."
+            )
+        if escalation_detected:
+            return "تمام يا فندم، لغيتلك الطلب وهحوّل حضرتك لحد من الإدارة يتابع معاك."
+        if complaint_detected:
+            return "تمام يا فندم، لغيتلك الطلب وهسجل المشكلة لفريق الدعم عشان يتابعوها."
+        return "تمام يا فندم، لغيتلك الطلب. لو احتجت أي حاجة تانية أنا معاك."
+
+    @staticmethod
+    def _sanitize_informational_reply(reply: str) -> str:
+        if not ChatService._has_any_cue(reply, _INFORMATIONAL_ORDER_REPLY_CUES):
+            return reply
+
+        sentences = re.split(r"(?<=[.!?؟])\s+", reply)
+        kept = [
+            sentence.strip()
+            for sentence in sentences
+            if sentence.strip()
+            and not ChatService._has_any_cue(sentence, _INFORMATIONAL_ORDER_REPLY_CUES)
+        ]
+        if kept:
+            return " ".join(kept)
+
+        sanitized = reply
+        for cue in sorted(_INFORMATIONAL_ORDER_REPLY_CUES, key=len, reverse=True):
+            sanitized = re.sub(
+                rf"\s*[^.!?؟]*{re.escape(cue)}[^.!?؟]*[!?؟]?",
+                "",
+                sanitized,
+            )
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized or "لو تحب تعرف تفاصيل أكتر، قولي."
 
     def _sanitize_order_details(
         self,
