@@ -35,6 +35,24 @@ Manual quality testing requires a real `OPENAI_API_KEY`.
 The `/tools/customer_chat.html` and `/tools/owner_chat.html` pages may be used as local
 manual-testing UIs only. They must call the same public endpoints listed above.
 
+## Report Generation Manual Test
+
+Report generation is a backend-to-AI endpoint. In production the frontend should call
+the .NET backend, and the .NET backend should call this AI endpoint with aggregated
+analysis data.
+
+1. Make sure `OPENAI_API_KEY` is set.
+2. Start the AI service.
+3. Open Swagger at `http://localhost:8000/docs`.
+4. Call `POST /api/v1/analysis/report/generate`.
+5. Use `docs/manual_testing/report_generation_example.json` as the payload.
+6. Verify the response includes `reportTitle`, `summaryAr`, `highlightsAr`, `problems`,
+   `recommendations`, `suggestedActions`, and `riskLevel`.
+7. Verify recommendations are tied to the provided data.
+8. Verify no invented numbers appear in the report.
+9. Verify Arabic is business-friendly.
+10. Verify the frontend does not call this endpoint directly in production.
+
 ## Seed Script
 
 You can post a sample KB through the real public endpoint:
@@ -50,6 +68,7 @@ python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/ma
 - `business_kb_non_restaurant.json`
 - `chat_examples.md`
 - `analysis_chat_batch_examples.json`
+- `report_generation_example.json`
 
 ## Manual Checklist
 
@@ -69,6 +88,8 @@ python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/ma
 - Business isolation across at least two `business_id` values.
 - Analysis with PII.
 - Analysis for a single-message session.
+- Report generation from aggregated analysis data.
+- Report recommendations tied to provided counts, issues, moments, and summaries.
 - Provider failure behavior when possible.
 
 Expected real AI behavior:

@@ -1,0 +1,89 @@
+{
+  "businessId": "biz-restaurant-demo",
+  "businessName": "Demo Restaurant",
+  "period": {
+    "from": "2026-06-01T00:00:00Z",
+    "to": "2026-06-30T23:59:59Z"
+  },
+  "metrics": {
+    "totalSessions": 120,
+    "analyzedSessions": 115,
+    "averageSentimentScore": -0.12,
+    "sentimentDistribution": {
+      "positive": 35,
+      "neutral": 50,
+      "negative": 30
+    },
+    "totalComplaints": 22,
+    "totalHumanAgentRequests": 14,
+    "totalOrdersDetected": 60
+  },
+  "topIntents": [
+    {
+      "name": "CreateOrder",
+      "count": 60
+    },
+    {
+      "name": "Complaint",
+      "count": 22
+    },
+    {
+      "name": "AskAboutProducts",
+      "count": 18
+    }
+  ],
+  "topTopics": [
+    {
+      "name": "delivery",
+      "count": 18
+    },
+    {
+      "name": "cold food",
+      "count": 12
+    },
+    {
+      "name": "manager request",
+      "count": 8
+    }
+  ],
+  "commonIssues": [
+    {
+      "issue": "Orders arriving cold",
+      "count": 12,
+      "examples": [
+        "Customer received cold burger",
+        "Customer complained that the order arrived cold"
+      ]
+    },
+    {
+      "issue": "Wrong order",
+      "count": 7,
+      "examples": [
+        "Customer said the order was wrong"
+      ]
+    }
+  ],
+  "recentKeyMoments": [
+    "Customer received cold burger",
+    "Customer requested to speak to manager",
+    "Customer complained about wrong order"
+  ],
+  "sampleSummaries": [
+    {
+      "sessionId": "session-001",
+      "summary": "Customer ordered a Classic Burger but received it cold and requested the manager.",
+      "summaryAr": "العميل طلب Classic Burger لكن الأوردر وصل بارد وطلب يكلم المدير.",
+      "mainIntent": "Complaint",
+      "sentimentLabel": "Negative",
+      "sentimentScore": -0.8
+    },
+    {
+      "sessionId": "session-002",
+      "summary": "Customer asked about delivery time and completed an order.",
+      "summaryAr": "العميل سأل عن وقت التوصيل وكمل طلب.",
+      "mainIntent": "CreateOrder",
+      "sentimentLabel": "Neutral",
+      "sentimentScore": 0.0
+    }
+  ]
+}

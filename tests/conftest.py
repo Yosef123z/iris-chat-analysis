@@ -10,13 +10,16 @@ from app.core.provider import (
     get_chat_batch_analysis_service,
     get_chat_service,
     get_llm_provider,
+    get_report_generation_service,
 )
 from app.main import app
 from app.models.chat import OrderDetails
+from app.models.report import ReportGenerationResponse
 from app.services.business_knowledge_service import BusinessKnowledgeService
 from app.services.chat_batch_analysis_service import ChatBatchAnalysisService
 from app.services.chat_service import ChatService, CustomerChatLLMOutput
 from app.services.pii_service import PIIService
+from app.services.report_generation_service import ReportGenerationService
 from app.services.session_memory import SessionMemoryStore
 
 
@@ -57,6 +60,7 @@ class FakeLLMProvider(LLMProvider):
         self.embeddings = FakeEmbeddings()
         self.chat_outputs = []
         self.analysis_outputs = []
+        self.report_outputs = []
         self.structured_calls = []
 
     async def chat(self, messages, model, temperature=0.7, max_tokens=1024):
@@ -81,6 +85,38 @@ class FakeLLMProvider(LLMProvider):
                 "ticket_details": None,
                 "escalation_requested": False,
                 "feedback_requested": False,
+            }
+        elif output_model is ReportGenerationResponse:
+            output = self.report_outputs.pop(0) if self.report_outputs else {
+                "businessId": "biz-restaurant-demo",
+                "period": {
+                    "from": "2026-06-01T00:00:00Z",
+                    "to": "2026-06-30T23:59:59Z",
+                },
+                "reportTitle": "Customer Experience Report",
+                "summary": "Customer service was mostly neutral with delivery complaints.",
+                "summaryAr": "التفاعل مع العملاء كان في الأغلب محايد مع شكاوى عن التوصيل.",
+                "highlights": ["CreateOrder was the most common intent."],
+                "highlightsAr": ["إنشاء الطلب كان أكثر نية متكررة."],
+                "problems": [
+                    {
+                        "title": "Cold orders",
+                        "description": "Several customers complained that orders arrived cold.",
+                        "severity": "high",
+                        "evidence": ["12 mentions of cold food"],
+                    }
+                ],
+                "recommendations": [
+                    {
+                        "title": "Improve delivery temperature control",
+                        "description": "Review packaging and delivery timing.",
+                        "priority": "high",
+                        "expectedImpact": "May reduce repeat complaints.",
+                        "suggestedOwner": "Operations Team",
+                    }
+                ],
+                "suggestedActions": ["Review delivery process this week."],
+                "riskLevel": "medium",
             }
         else:
             output = self.analysis_outputs.pop(0) if self.analysis_outputs else {
@@ -124,6 +160,9 @@ def client(fake_provider):
     )
     app.dependency_overrides[get_chat_batch_analysis_service] = lambda: ChatBatchAnalysisService(
         pii_service=pii,
+        llm_provider=fake_provider,
+    )
+    app.dependency_overrides[get_report_generation_service] = lambda: ReportGenerationService(
         llm_provider=fake_provider,
     )
 

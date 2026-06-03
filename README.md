@@ -12,6 +12,7 @@ IRIS is a FastAPI AI service for backend integration. It exposes business knowle
 - `POST /api/v1/chat`
 - `POST /api/v1/analysis/chat-batch`
 - `POST /api/v1/analysis/pii-remove`
+- `POST /api/v1/analysis/report/generate`
 
 Auxiliary owner analytics routes may be used by the dashboard:
 
@@ -24,9 +25,11 @@ Auxiliary owner analytics routes may be used by the dashboard:
 - Business KB sync uses snake_case and builds/replaces an in-memory vector index by `business_id`.
 - Chat uses snake_case and performs LLM-backed RAG over only the synced KB for the request business.
 - Analysis uses camelCase and calls the LLM after PII redaction.
+- Report generation uses camelCase and is called by the .NET backend with already aggregated analysis results.
 - Session/cart memory is temporary and expires after roughly two hours.
 - The AI returns order, ticket, escalation, and feedback signals only.
 - The backend owns all permanent records and persistence.
+- The AI report endpoint returns structured report wording and recommendations only; it does not store reports or access the backend database.
 - There is no semantic cache, database, static menu fallback, global FAISS, hidden helper API route, public upload route, backend webhook creation, or voice interface.
 
 ## Setup
@@ -37,7 +40,7 @@ pip install -r requirements.txt
 python scripts/run_server.py
 ```
 
-`OPENAI_API_KEY` is required for real KB vector indexing, real customer chat, real chat-batch analysis, and LLM-backed owner analytics. Automated tests do not require it because they inject fake LLM and fake embeddings providers.
+`OPENAI_API_KEY` is required for real KB vector indexing, real customer chat, real chat-batch analysis, real report generation, and LLM-backed owner analytics. Report generation reuses `ANALYSIS_MODEL`. Automated tests do not require it because they inject fake LLM and fake embeddings providers.
 
 Manual contract testing is documented in [docs/manual_testing/README.md](docs/manual_testing/README.md).
 
