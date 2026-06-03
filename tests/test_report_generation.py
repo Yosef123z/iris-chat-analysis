@@ -110,8 +110,46 @@ def test_report_prompt_contains_aggregate_data_and_guardrails(client, fake_provi
         "Do not invent numbers",
         "Return JSON only",
         "Use backend-provided numbers exactly",
+        "dashboard-friendly Egyptian Arabic",
+        "business owners",
+        "non-technical owner",
+        "not slangy",
+        "Avoid stiff Modern Standard Arabic",
+        "واضح إن",
+        "When commonIssues contains more than one meaningful issue",
+        "separate recommendations for the top issues",
+        "Calibrate riskLevel conservatively",
+        "between -0.2 and 0.2",
+        "prefer medium",
+        "Use critical only for severe, repeated, business-impacting issues",
     ]:
         assert expected in text
+
+
+def test_report_service_downgrades_high_risk_for_neutral_low_ratio_payload(fake_provider):
+    fake_provider.report_outputs.append(
+        {
+            "businessId": "biz-restaurant-demo",
+            "period": report_payload()["period"],
+            "reportTitle": "Customer Experience Report",
+            "summary": "Summary grounded in the input.",
+            "summaryAr": "ملخص مناسب للبيانات المرسلة.",
+            "highlights": [],
+            "highlightsAr": [],
+            "problems": [],
+            "recommendations": [],
+            "suggestedActions": [],
+            "riskLevel": "high",
+        }
+    )
+    service = ReportGenerationService(fake_provider)
+    from app.models.report import ReportGenerationRequest
+
+    result = asyncio.run(
+        service.generate_report(ReportGenerationRequest.model_validate(report_payload()))
+    )
+
+    assert result.risk_level == "medium"
 
 
 def test_report_service_forces_request_business_id_and_period(client, fake_provider):
