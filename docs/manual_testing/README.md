@@ -80,6 +80,8 @@ Expected real AI behavior:
 - Order item names match canonical KB names exactly.
 - Clear customer confirmation phrases force `order_finalized=true` only when a valid cart exists.
 - Informational product/service questions, such as price or details requests, do not start a cart.
+- Informational product/service questions do not ask to add the item or service to an order.
+- Cancel order requests clear the current session cart and return no active order details.
 - Unavailable items are not finalized.
 - Attempts to order unavailable items return an empty `CreateOrder` details object for contract consistency.
 - Escalation-only messages request human handoff without creating a ticket; complaint plus escalation creates a high-priority ticket and handoff signal.

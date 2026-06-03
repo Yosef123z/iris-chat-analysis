@@ -278,6 +278,82 @@ def test_confirm_order_phrase_forces_finalization(client, fake_provider):
     assert "هل ترغب" not in data["reply"]
 
 
+def test_cancel_order_clears_cart_and_returns_false_order_flags(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "cancel-cart-1", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Lemon Mint.",
+            order_detected=True,
+            items=[OrderLineItem(name="Lemon Mint", quantity=1, price=45)],
+        )
+    )
+    chat(client, "biz-1", "cancel-cart-1", "ضيف Lemon Mint")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="معلش، مش هقدر ألغي الأوردر دلوقتي.",
+            order_detected=True,
+            items=[
+                OrderLineItem(name="Classic Burger", quantity=1, price=120),
+                OrderLineItem(name="Lemon Mint", quantity=1, price=45),
+            ],
+        )
+    )
+    data = chat(
+        client,
+        "biz-1",
+        "cancel-cart-1",
+        "بقولك ايه خلاص عايز الغى الاوردر معلش",
+    )
+    assert data["order_detected"] is False
+    assert data["order_finalized"] is False
+    assert data["order_details"] is None
+    assert "لغيت" in data["reply"] or "اتلغى" in data["reply"]
+    assert "مش هقدر" not in data["reply"]
+
+
+def test_cancel_order_clears_cart_before_new_order_same_session(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "cancel-cart-2", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="معلش، مش هقدر ألغي الأوردر دلوقتي.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "cancel-cart-2", "خلاص ألغي الطلب")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Lemon Mint.",
+            order_detected=True,
+            items=[OrderLineItem(name="Lemon Mint", quantity=1, price=45)],
+        )
+    )
+    data = chat(client, "biz-1", "cancel-cart-2", "عايز Lemon Mint")
+    names = [item["name"] for item in data["order_details"]["items"]]
+    assert names == ["Lemon Mint"]
+    assert "Classic Burger" not in names
+
+
 def test_add_item_and_finalization_same_turn(client, fake_provider):
     sync(client, restaurant_kb())
     fake_provider.chat_outputs.append(
@@ -339,6 +415,26 @@ def test_informational_clinic_query_does_not_start_order(client, fake_provider):
     assert "هل ترغب" not in data["reply"]
 
 
+def test_informational_query_reply_does_not_offer_add_to_order(client, fake_provider):
+    sync(client, clinic_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="Dental Cleaning هي خدمة تنظيف الأسنان. سعرها 500 جنيه. تحب أضيفها لطلبك؟",
+            order_detected=True,
+            items=[OrderLineItem(name="Dental Cleaning", quantity=1, price=500)],
+        )
+    )
+    data = chat(client, "clinic-1", "clinic-info-2", "قولي تفاصيل Dental Cleaning")
+    assert data["order_detected"] is False
+    assert data["order_finalized"] is False
+    assert data["order_details"] is None
+    assert "أضيفها لطلبك" not in data["reply"]
+    assert "تحب أضيف" not in data["reply"]
+    assert "تأكيد الطلب" not in data["reply"]
+    assert "Dental Cleaning" in data["reply"]
+    assert "500" in data["reply"]
+
+
 def test_escalation_only_does_not_create_ticket(client, fake_provider):
     sync(client, restaurant_kb())
     fake_provider.chat_outputs.append(
@@ -397,12 +493,14 @@ def test_unavailable_item_returns_empty_order_details(client, fake_provider):
         llm_chat_output(
             reply="عذرًا، Crispy Chicken Burger غير متوفر حاليًا.",
             order_detected=True,
-            items=[OrderLineItem(name="Crispy Chicken Burger", quantity=1, price=110)],
+            items=None,
         )
     )
     data = chat(client, "biz-1", "manual-unavailable-1", "عايز Crispy Chicken Burger")
     assert data["order_detected"] is True
     assert data["order_finalized"] is False
+    assert data["order_details"] is not None
+    assert data["order_details"]["intent"] == "CreateOrder"
     assert data["order_details"]["items"] == []
     assert data["order_details"]["total_amount"] == 0
     assert "معلش" in data["reply"]
