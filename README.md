@@ -1,4 +1,4 @@
-# IRIS AI Contract API
+# IRIS AI
 
 IRIS is a FastAPI AI service for backend integration. It exposes business knowledge-base sync, LLM-backed customer chat signals, LLM-backed chat-batch analysis, PII removal, and optional owner analytics.
 
