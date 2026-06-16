@@ -1,4 +1,4 @@
-# IRIS AI
+# IRIS AI Contract API
 
 IRIS is a FastAPI AI service for backend integration. It exposes business knowledge-base sync, LLM-backed customer chat signals, LLM-backed chat-batch analysis, PII removal, and optional owner analytics.
 
@@ -37,7 +37,7 @@ Auxiliary owner analytics routes may be used by the dashboard:
 ```powershell
 Copy-Item env.example .env
 pip install -r requirements.txt
-python scripts/run_server.py
+python scripts/run_server.py --> http://localhost:8000/docs
 ```
 
 `OPENAI_API_KEY` is required for real KB vector indexing, real customer chat, real chat-batch analysis, real report generation, and LLM-backed owner analytics. Report generation reuses `ANALYSIS_MODEL`. Automated tests do not require it because they inject fake LLM and fake embeddings providers.

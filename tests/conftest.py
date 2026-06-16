@@ -12,6 +12,7 @@ from app.core.provider import (
     get_llm_provider,
     get_report_generation_service,
 )
+from app.core.rate_limiter import limiter
 from app.main import app
 from app.models.chat import OrderDetails
 from app.models.report import ReportGenerationResponse
@@ -147,6 +148,7 @@ def fake_provider():
 @pytest.fixture
 def client(fake_provider):
     clear_provider_caches()
+    limiter.reset()
     knowledge = BusinessKnowledgeService()
     memory = SessionMemoryStore()
     pii = PIIService()
@@ -170,6 +172,7 @@ def client(fake_provider):
         yield test_client
 
     app.dependency_overrides.clear()
+    limiter.reset()
     clear_provider_caches()
 
 
