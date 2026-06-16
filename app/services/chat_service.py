@@ -51,6 +51,17 @@ _FORBIDDEN_REPLY_TERMS = {
     "python",
     "module",
 }
+_ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u0870-\u089F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
+
+
+def contains_arabic(text: str) -> bool:
+    return bool(_ARABIC_CHAR_RE.search(text or ""))
+
+
+def detect_customer_language(text: str) -> str:
+    return "ar" if contains_arabic(text) else "en"
+
+
 _FINALIZATION_CUES = {
     "أكد الطلب",
     "اكد الطلب",
@@ -276,15 +287,13 @@ class ChatService:
 
     async def process_chat_message(self, request: ChatRequest) -> ChatResponse:
         start_time = time.time()
+        customer_language = detect_customer_language(request.message)
         kb = self.knowledge.get_business_kb(request.business_id)
         index = self.knowledge.get_business_index(request.business_id)
         if kb is None or index is None:
             return ChatResponse(
                 session_id=request.session_id,
-                reply=(
-                    "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
-                    "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
-                ),
+                reply=self._missing_business_data_reply(customer_language),
                 processing_time_ms=self._elapsed_ms(start_time),
             )
 
@@ -298,14 +307,11 @@ class ChatService:
             if context is None:
                 return ChatResponse(
                     session_id=request.session_id,
-                    reply=(
-                        "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
-                        "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
-                    ),
+                    reply=self._missing_business_data_reply(customer_language),
                     processing_time_ms=self._elapsed_ms(start_time),
                 )
             llm_output = await self.llm_provider.structured_output(
-                self._build_messages(request, state, context),
+                self._build_messages(request, state, context, customer_language),
                 model=settings.GPT_CHAT_MODEL,
                 output_model=CustomerChatLLMOutput,
                 temperature=0.2,
@@ -315,7 +321,7 @@ class ChatService:
         except Exception as exc:
             raise HTTPException(status_code=503, detail="AI response generation failed") from exc
 
-        response = self._validate_output(request, state, llm_output, start_time)
+        response = self._validate_output(request, state, llm_output, start_time, customer_language)
         self.memory.append_turn(state, request.message, response.reply)
         if response.escalation_requested:
             state.handoff_active = True
@@ -326,10 +332,25 @@ class ChatService:
         request: ChatRequest,
         state: SessionState,
         context: BusinessRetrievalContext,
+        customer_language: str,
     ) -> list[dict[str, str]]:
+        if customer_language == "ar":
+            language_instruction = (
+                "The latest customer message contains Arabic text. Reply in natural Egyptian Arabic only. "
+                "Do not use Modern Standard Arabic."
+            )
+            not_found_language = "natural Egyptian Arabic"
+        else:
+            language_instruction = (
+                "The latest customer message is entirely English. Reply in natural customer-service English only. "
+                "Do not use Arabic, and do not translate the customer's text back to Arabic."
+            )
+            not_found_language = "natural customer-service English"
+
         context_payload = {
             "business_id": context.business_id,
             "business_name": context.business_name,
+            "detected_customer_language": customer_language,
             "retrieved_documents": [
                 {
                     "id": item.document.id,
@@ -363,9 +384,9 @@ class ChatService:
         system_prompt = (
             "You are IRIS, a customer-facing digital employee for the specific business in the context. "
             "Use only the supplied business knowledge context for this business_id. Do not invent facts, prices, "
-            "policies, products, services, or availability. If information is not present, politely say in natural "
-            "Egyptian Arabic that it is not available from the business data. Reply in natural Egyptian Arabic by "
-            "default unless the customer explicitly asks for another language. Be concise, warm, professional, and "
+            f"policies, products, services, or availability. If information is not present, politely say in {not_found_language} "
+            "that it is not available from the business data. "
+            f"{language_instruction} Be concise, warm, professional, and "
             "respectful. Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
             "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
             "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
@@ -412,6 +433,7 @@ class ChatService:
         state: SessionState,
         output: CustomerChatLLMOutput,
         start_time: float,
+        customer_language: str,
     ) -> ChatResponse:
         sanitized_details, unavailable_items = self._sanitize_order_details(
             request.business_id,
@@ -503,29 +525,27 @@ class ChatService:
         reply = self._sanitize_dialect(output.reply.strip())
         if cancel_requested:
             reply = self._cancel_reply(
+                customer_language,
                 complaint_detected=complaint_detected,
                 escalation_detected=escalation_detected,
             )
         elif unavailable_items:
-            reply = self._unavailable_reply(request.business_id, unavailable_items)
+            reply = self._unavailable_reply(request.business_id, unavailable_items, customer_language)
         elif order_finalized and finalization_requested:
-            reply = "تمام يا فندم، كده الطلب اتأكد. هنبدأ نجهزه لحضرتك."
+            reply = self._order_finalized_reply(customer_language)
         elif escalation_detected and complaint_detected:
-            reply = (
-                "معلش جدًا يا فندم على اللي حصل، هسجل المشكلة فورًا "
-                "وهحوّل حضرتك لحد من الإدارة يتابع معاك."
-            )
+            reply = self._complaint_escalation_reply(customer_language)
         elif escalation_detected:
-            reply = "تمام يا فندم، هحوّل حضرتك لحد من الإدارة يتابع معاك."
+            reply = self._escalation_reply(customer_language)
         elif complaint_detected:
-            reply = "معلش يا فندم، هسجل المشكلة لفريق الدعم عشان يتابعوها."
+            reply = self._complaint_reply(customer_language)
         elif finalization_requested and not order_finalized:
-            reply = "تمام يا فندم، اختار الحاجة اللي تحب تطلبها الأول وأنا أساعدك."
+            reply = self._empty_finalization_reply(customer_language)
         if not reply or self._reply_has_internal_terms(reply):
-            reply = self._safe_reply(order_detected, ticket_detected, escalation_requested)
+            reply = self._safe_reply(customer_language, order_detected, ticket_detected, escalation_requested)
         reply = self._sanitize_dialect(reply)
         if informational_only and not unavailable_items and not cancel_requested:
-            reply = self._sanitize_informational_reply(reply)
+            reply = self._sanitize_informational_reply(reply, customer_language)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -637,7 +657,67 @@ class ChatService:
         return sanitized
 
     @staticmethod
-    def _cancel_reply(*, complaint_detected: bool, escalation_detected: bool) -> str:
+    def _missing_business_data_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return (
+                "Sorry, this business data is not available to me yet. "
+                "Please send the business data first, then I can help."
+            )
+        return (
+            "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
+            "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
+        )
+
+    @staticmethod
+    def _order_finalized_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return "Your order is confirmed. We will start preparing it for you."
+        return "تمام يا فندم، كده الطلب اتأكد. هنبدأ نجهزه لحضرتك."
+
+    @staticmethod
+    def _complaint_escalation_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return (
+                "I am sorry about what happened. I will record the issue right away "
+                "and connect you with someone from management to follow up."
+            )
+        return (
+            "معلش جدًا يا فندم على اللي حصل، هسجل المشكلة فورًا "
+            "وهحوّل حضرتك لحد من الإدارة يتابع معاك."
+        )
+
+    @staticmethod
+    def _escalation_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return "Sure, I will connect you with someone from management to follow up."
+        return "تمام يا فندم، هحوّل حضرتك لحد من الإدارة يتابع معاك."
+
+    @staticmethod
+    def _complaint_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return "I am sorry about that. I will record the issue for the support team to follow up."
+        return "معلش يا فندم، هسجل المشكلة لفريق الدعم عشان يتابعوها."
+
+    @staticmethod
+    def _empty_finalization_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return "Sure. Please choose what you would like to order first, and I will help you."
+        return "تمام يا فندم، اختار الحاجة اللي تحب تطلبها الأول وأنا أساعدك."
+
+    @staticmethod
+    def _cancel_reply(customer_language: str, *, complaint_detected: bool, escalation_detected: bool) -> str:
+        if customer_language == "en":
+            if complaint_detected and escalation_detected:
+                return (
+                    "Your order has been canceled. I will record the issue right away "
+                    "and connect you with someone from management to follow up."
+                )
+            if escalation_detected:
+                return "Your order has been canceled, and I will connect you with someone from management to follow up."
+            if complaint_detected:
+                return "Your order has been canceled, and I will record the issue for the support team to follow up."
+            return "Your order has been canceled. I am here if you need anything else."
+
         if complaint_detected and escalation_detected:
             return (
                 "تمام يا فندم، لغيتلك الطلب وهسجل المشكلة فورًا "
@@ -650,7 +730,7 @@ class ChatService:
         return "تمام يا فندم، لغيتلك الطلب. لو احتجت أي حاجة تانية أنا معاك."
 
     @staticmethod
-    def _sanitize_informational_reply(reply: str) -> str:
+    def _sanitize_informational_reply(reply: str, customer_language: str) -> str:
         if not ChatService._has_any_cue(reply, _INFORMATIONAL_ORDER_REPLY_CUES):
             return reply
 
@@ -672,7 +752,11 @@ class ChatService:
                 sanitized,
             )
         sanitized = re.sub(r"\s+", " ", sanitized).strip()
-        return sanitized or "لو تحب تعرف تفاصيل أكتر، قولي."
+        if sanitized:
+            return sanitized
+        if customer_language == "en":
+            return "Tell me if you would like more details."
+        return "لو تحب تعرف تفاصيل أكتر، قولي."
 
     def _sanitize_order_details(
         self,
@@ -739,8 +823,13 @@ class ChatService:
             category=category,  # type: ignore[arg-type]
         )
 
-    def _unavailable_reply(self, business_id: str, unavailable_items: list[BusinessMenuItem]) -> str:
-        names = "، ".join(item.name for item in unavailable_items)
+    def _unavailable_reply(
+        self,
+        business_id: str,
+        unavailable_items: list[BusinessMenuItem],
+        customer_language: str,
+    ) -> str:
+        names = ", ".join(item.name for item in unavailable_items)
         alternatives: list[BusinessMenuItem] = []
         for item in unavailable_items:
             alternatives.extend(self.knowledge.alternatives_for(business_id, item))
@@ -749,16 +838,40 @@ class ChatService:
             if item.name not in {existing.name for existing in unique_alternatives}:
                 unique_alternatives.append(item)
         if unique_alternatives:
+            if customer_language == "en":
+                alt_text = self._summarize_english_items(unique_alternatives[:3])
+                return f"Sorry, {names} is not available right now. Available alternatives: {alt_text}."
             alt_text = self.knowledge.summarize_items(unique_alternatives[:3])
+            names = "، ".join(item.name for item in unavailable_items)
             return f"معلش يا فندم، {names} مش متاح حاليًا. المتاح بدلًا منه: {alt_text}."
+        if customer_language == "en":
+            return f"Sorry, {names} is not available right now."
+        names = "، ".join(item.name for item in unavailable_items)
         return f"معلش يا فندم، {names} مش متاح حاليًا."
 
     @staticmethod
+    def _summarize_english_items(items: list[BusinessMenuItem]) -> str:
+        parts = []
+        for item in items:
+            price = f" for {item.price:g}" if item.price is not None else ""
+            parts.append(f"{item.name}{price}")
+        return ", ".join(parts)
+
+    @staticmethod
     def _safe_reply(
+        customer_language: str,
         order_detected: bool,
         ticket_detected: bool,
         escalation_requested: bool,
     ) -> str:
+        if customer_language == "en":
+            if escalation_requested:
+                return "Sure, we will send your request to the support team so they can follow up with you."
+            if ticket_detected:
+                return "I am sorry about that. We will record the issue for the support team to follow up."
+            if order_detected:
+                return "Your order has been recorded. Would you like to add anything else?"
+            return "Sorry, that information is not available to me right now from the business data."
         if escalation_requested:
             return "تمام يا فندم، هنوصل طلب حضرتك لفريق الدعم عشان يتابع معاك."
         if ticket_detected:
