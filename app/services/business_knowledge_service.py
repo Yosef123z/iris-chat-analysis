@@ -1,4 +1,4 @@
-"""In-memory business-scoped knowledge-base storage and retrieval."""
+"""Business-scoped knowledge-base storage and retrieval."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import math
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Literal
 
 from rapidfuzz import fuzz
 
+from app.config import settings
 from app.models.business_kb import (
     BusinessFAQ,
     BusinessKnowledgeSyncRequest,
@@ -90,11 +92,14 @@ class BusinessRetrievalContext:
 
 
 class BusinessKnowledgeService:
-    """Temporary in-memory KB store keyed by business_id."""
+    """Business KB store keyed by business_id with local index persistence."""
 
-    def __init__(self) -> None:
+    def __init__(self, storage_dir: str | Path | None = None) -> None:
+        from app.services.business_kb_persistence import BusinessKBPersistence
+
         self._store: dict[str, StoredBusinessKnowledge] = {}
         self._indexes: dict[str, BusinessVectorIndex] = {}
+        self._persistence = BusinessKBPersistence(storage_dir or settings.BUSINESS_KB_STORAGE_DIR)
 
     async def sync_business_kb(
         self,
@@ -122,6 +127,7 @@ class BusinessKnowledgeService:
             updated_at=updated_at,
         )
 
+        self._persistence.save(stored, index)
         self._store[payload.business_id] = stored
         self._indexes[payload.business_id] = index
 
@@ -130,6 +136,14 @@ class BusinessKnowledgeService:
 
     def get_business_index(self, business_id: str) -> BusinessVectorIndex | None:
         return self._indexes.get(business_id)
+
+    def load_persisted_indexes(self) -> int:
+        loaded = 0
+        for stored, index in self._persistence.load_all():
+            self._store[stored.business_id] = stored
+            self._indexes[index.business_id] = index
+            loaded += 1
+        return loaded
 
     def clear(self) -> None:
         self._store.clear()
