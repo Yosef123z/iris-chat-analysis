@@ -146,10 +146,10 @@ def fake_provider():
 
 
 @pytest.fixture
-def client(fake_provider):
+def client(fake_provider, tmp_path):
     clear_provider_caches()
     limiter.reset()
-    knowledge = BusinessKnowledgeService()
+    knowledge = BusinessKnowledgeService(storage_dir=tmp_path / "business_kb")
     memory = SessionMemoryStore()
     pii = PIIService()
 
