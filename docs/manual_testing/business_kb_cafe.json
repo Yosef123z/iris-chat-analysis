@@ -12,6 +12,14 @@
         "is_available": true
       },
       {
+        "menu_item_id": "coffee-2",
+        "name": "Cappuccino",
+        "description": "Espresso with steamed milk and foam",
+        "price": 75,
+        "category": "Coffee",
+        "is_available": true
+      },
+      {
         "menu_item_id": "dessert-1",
         "name": "Honey Cake",
         "description": "Layered honey cake slice",
