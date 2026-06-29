@@ -665,14 +665,14 @@ class ChatService:
             )
         return (
             "معلش يا فندم، بيانات النشاط ده لسه مش متاحة عندي. "
-            "من فضلك ابعت بيانات النشاط الأول وبعدها أقدر أساعد حضرتك."
+            "."
         )
 
     @staticmethod
     def _order_finalized_reply(customer_language: str) -> str:
         if customer_language == "en":
             return "Your order is confirmed. We will start preparing it for you."
-        return "تمام يا فندم، كده الطلب اتأكد. هنبدأ نجهزه لحضرتك."
+        return "تمام يا فندم هنبدأ نجهزه لحضرتك."
 
     @staticmethod
     def _complaint_escalation_reply(customer_language: str) -> str:
@@ -878,7 +878,7 @@ class ChatService:
             return "معلش يا فندم، هنسجل المشكلة لفريق الدعم عشان يتابعها."
         if order_detected:
             return "تمام يا فندم، سجلت طلب حضرتك. تحب تضيف حاجة تانية؟"
-        return "معلش يا فندم، المعلومة دي مش متاحة عندي حاليًا من بيانات النشاط."
+        return "معلش يا فندم، المعلومة دي مش متاحة عندي حاليًا."
 
     @staticmethod
     def _reply_has_internal_terms(reply: str) -> bool:
