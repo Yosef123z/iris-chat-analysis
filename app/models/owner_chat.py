@@ -7,17 +7,21 @@
 ==============================================================
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from typing import List, Optional
+
+from app.models.report import ReportGenerationResponse, ReportPeriod
 
 
 class OwnerChatRequest(BaseModel):
     """Request model for owner analytics questions."""
+    business_id: str = Field(..., min_length=1, description="Business identifier")
     session_id: str = Field(..., description="Owner session identifier")
     message: str = Field(..., min_length=1, description="Owner's analytics question")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
+            "business_id": "biz-restaurant-demo",
             "session_id": "owner-session-123",
             "message": "What was today's revenue?"
         }
@@ -26,6 +30,7 @@ class OwnerChatRequest(BaseModel):
 
 class OwnerChatResponse(BaseModel):
     """Response model for owner analytics chatbot."""
+    business_id: str
     session_id: str
     reply: str = Field(..., description="AI assistant's analytics response")
     data_sources_used: List[str] = Field(
@@ -39,6 +44,7 @@ class OwnerChatResponse(BaseModel):
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
+            "business_id": "biz-restaurant-demo",
             "session_id": "owner-session-123",
             "reply": "Today's revenue was 18,500 EGP, which is a 12% increase compared to last Saturday.",
             "data_sources_used": ["Financial Performance", "Executive Overview"],
@@ -85,6 +91,56 @@ class ReloadResponse(BaseModel):
             "message": "Analytics data reloaded successfully."
         }
     })
+
+
+class OwnerReportSyncRequest(BaseModel):
+    """Backend-provided report payload used to ground owner chat."""
+
+    business_id: str = Field(..., min_length=1)
+    business_name: str = Field(..., min_length=1)
+    period: ReportPeriod
+    report: ReportGenerationResponse
+
+    @model_validator(mode="after")
+    def _report_matches_owner_scope(self):
+        if self.report.business_id != self.business_id:
+            raise ValueError("report.businessId must match business_id")
+        if self.report.period != self.period:
+            raise ValueError("report.period must match period")
+        return self
+
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "business_id": "biz-restaurant-demo",
+            "business_name": "Demo Restaurant",
+            "period": {
+                "from": "2026-06-01T00:00:00Z",
+                "to": "2026-06-30T23:59:59Z",
+            },
+            "report": {
+                "businessId": "biz-restaurant-demo",
+                "period": {
+                    "from": "2026-06-01T00:00:00Z",
+                    "to": "2026-06-30T23:59:59Z",
+                },
+                "reportTitle": "Customer Experience Report",
+                "summary": "Customer service was mostly neutral with delivery complaints.",
+                "summaryAr": "Business-friendly Arabic summary.",
+                "highlights": ["CreateOrder was the most common intent."],
+                "highlightsAr": ["Arabic highlight."],
+                "problems": [],
+                "recommendations": [],
+                "suggestedActions": ["Review delivery process this week."],
+                "riskLevel": "medium",
+            },
+        }
+    })
+
+
+class OwnerReportSyncResponse(BaseModel):
+    """Response model for owner report sync."""
+
+    status: str = "ok"
 
 
 class SynonymsReloadResponse(BaseModel):
