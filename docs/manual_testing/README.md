@@ -65,7 +65,6 @@ python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/ma
 
 - `business_kb_restaurant.json`
 - `business_kb_cafe.json`
-- `business_kb_non_restaurant.json`
 - `chat_examples.md`
 - `analysis_chat_batch_examples.json`
 - `report_generation_example.json`
@@ -74,7 +73,6 @@ python scripts/seed_manual_kb.py --base-url http://localhost:8000 --file docs/ma
 
 - Restaurant KB sync and chat.
 - Cafe KB sync and chat.
-- Clinic or non-restaurant KB sync and chat.
 - Missing KB chat response.
 - Product/service question.
 - Price question.
@@ -106,5 +104,5 @@ Expected real AI behavior:
 - Unavailable items are not finalized.
 - Attempts to order unavailable items return an empty `CreateOrder` details object for contract consistency.
 - Escalation-only messages request human handoff without creating a ticket; complaint plus escalation creates a high-priority ticket and handoff signal.
-- Non-restaurant KBs do not receive restaurant-specific language.
+- Chat replies are specialized for restaurant and cafe customer service.
 - Chat-batch summaries, topics, and key moments are meaningful and PII-free; empty topics or key moments may be supplemented from the redacted transcript.
