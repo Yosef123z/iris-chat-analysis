@@ -6,20 +6,30 @@
     <title>IRIS Owner Analytics</title>
     <style>
         body { font-family: Arial, sans-serif; max-width: 720px; margin: 40px auto; }
-        textarea, input, button { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px; }
+        label { font-weight: bold; display: block; margin-top: 12px; }
+        textarea, input, button { width: 100%; box-sizing: border-box; margin: 4px 0 8px; padding: 10px; }
         #log { white-space: pre-wrap; border: 1px solid #ccc; padding: 12px; min-height: 180px; }
     </style>
 </head>
 <body>
     <h1>IRIS Owner Analytics</h1>
-    <p>Auxiliary owner analytics tool. It calls the official public endpoint only.</p>
+    <p>Owner analytics tool — answers are grounded exclusively in the backend-synced report for the given business.</p>
+
+    <label for="businessId">Business ID</label>
+    <input id="businessId" value="biz-restaurant-demo" aria-label="Business ID">
+
+    <label for="sessionId">Session ID</label>
     <input id="sessionId" value="owner-session-1" aria-label="Session ID">
-    <textarea id="message" rows="3" aria-label="Message">Summarize today's report.</textarea>
+
+    <label for="message">Message</label>
+    <textarea id="message" rows="3" aria-label="Message">Summarize this month's report.</textarea>
+
     <button onclick="sendMessage()">Send</button>
     <div id="log"></div>
     <script>
         async function sendMessage() {
             const payload = {
+                business_id: document.getElementById("businessId").value,
                 session_id: document.getElementById("sessionId").value,
                 message: document.getElementById("message").value
             };

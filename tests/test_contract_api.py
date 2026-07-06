@@ -5,7 +5,7 @@ from app.config import settings
 from app.core.llm_interface import AIProviderError
 from app.models.business_kb import BusinessKnowledgeSyncRequest
 from app.models.chat import OrderLineItem
-from app.services.chat_service import contains_arabic, detect_customer_language
+from app.services.chat_service import ChatService, contains_arabic, detect_customer_language
 from tests.conftest import llm_chat_output, prompt_text
 
 
@@ -253,6 +253,8 @@ def test_chat_calls_llm_and_prompt_is_grounded(client, fake_provider):
     assert '"detected_customer_language": "en"' in text
     assert "Do not invent" in text
     assert "Never mention backend" in text
+    assert "real professional waiter or cafe cashier" in text
+    assert "Egyptian customer service employee" in text
 
 
 def test_arabic_and_mixed_messages_add_egyptian_arabic_prompt_instruction(client, fake_provider):
@@ -267,6 +269,16 @@ def test_arabic_and_mixed_messages_add_egyptian_arabic_prompt_instruction(client
     chat(client, "biz-1", "language-ar-2", "hello عايز برجر")
     text = prompt_text(fake_provider)
     assert '"detected_customer_language": "ar"' in text
+
+
+def test_arabic_reply_with_english_item_name_starts_rtl_naturally(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(llm_chat_output(reply="Classic Burger متاح يا فندم."))
+
+    data = chat(client, "biz-1", "direction-ar-1", "Classic Burger متاح؟")
+
+    assert data["reply"].startswith("\u200Fتمام يا فندم، Classic Burger")
+    assert contains_arabic(data["reply"]) is True
 
 
 def test_canonical_names_prices_and_cart_across_turns(client, fake_provider):
@@ -302,12 +314,19 @@ def test_confirm_order_phrase_forces_finalization(client, fake_provider):
     sync(client, restaurant_kb())
     fake_provider.chat_outputs.append(
         llm_chat_output(
-            reply="ضفت Classic Burger. هل ترغب في إضافة أي شيء آخر؟",
+            reply="ضفت Classic Burger. هل ترغب في تأكيد الطلب؟",
             order_detected=True,
             items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
         )
     )
-    chat(client, "biz-1", "manual-order-1", "عايز Classic Burger")
+    first = chat(client, "biz-1", "manual-order-1", "عايز Classic Burger")
+    assert first["order_detected"] is True
+    assert first["order_finalized"] is False
+    assert "تأكيد الطلب" not in first["reply"]
+    assert "تأكد الطلب" not in first["reply"]
+    assert "هل ترغب" not in first["reply"]
+    # The natural acknowledgment part should be preserved.
+    assert first["reply"]  # reply is non-empty
 
     fake_provider.chat_outputs.append(
         llm_chat_output(
@@ -322,6 +341,62 @@ def test_confirm_order_phrase_forces_finalization(client, fake_provider):
     assert data["order_finalized"] is True
     assert data["order_details"]["items"][0]["name"] == "Classic Burger"
     assert "هل ترغب" not in data["reply"]
+
+
+def test_open_order_does_not_ask_delivery_or_takeaway_before_confirmation(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply=(
+                "تمام، سجلتلك Classic Burger و Lemon Mint. "
+                "تحبي تاكليه في المطعم ولا تحبي توصليه للبيت؟"
+            ),
+            order_detected=True,
+            items=[
+                OrderLineItem(name="Classic Burger", quantity=1, price=120),
+                OrderLineItem(name="Lemon Mint", quantity=1, price=45),
+            ],
+        )
+    )
+
+    data = chat(client, "biz-1", "open-order-logical-1", "عايز Classic Burger و Lemon Mint")
+
+    assert data["order_detected"] is True
+    assert data["order_finalized"] is False
+    assert "توصيل" not in data["reply"]
+    assert "توصليه" not in data["reply"]
+    assert "للبيت" not in data["reply"]
+    assert "في المطعم" not in data["reply"]
+    assert "takeaway" not in data["reply"]
+    assert "تحب تضيف حاجة تانية" in data["reply"]
+
+
+def test_natural_arabic_no_more_items_finalizes_active_cart(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="تمام يا فندم، ضفت Classic Burger. تحب تضيف معاه Lemon Mint؟",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    first = chat(client, "biz-1", "natural-close-ar-1", "عايز Classic Burger")
+    assert first["order_finalized"] is False
+    assert "Lemon Mint" in first["reply"]
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="تمام، هل ترغب في تأكيد الطلب؟",
+            order_detected=True,
+            order_finalized=False,
+        )
+    )
+    data = chat(client, "biz-1", "natural-close-ar-1", "لا شكرا مش عايز حاجة تانية")
+    assert data["order_detected"] is True
+    assert data["order_finalized"] is True
+    assert data["order_details"]["items"][0]["name"] == "Classic Burger"
+    assert "هل ترغب" not in data["reply"]
+    assert contains_arabic(data["reply"]) is True
 
 
 def test_english_finalization_forced_reply_stays_english(client, fake_provider):
@@ -347,7 +422,70 @@ def test_english_finalization_forced_reply_stays_english(client, fake_provider):
     assert data["order_detected"] is True
     assert data["order_finalized"] is True
     assert data["order_details"]["items"][0]["name"] == "Classic Burger"
-    assert data["reply"] == "Your order is confirmed. We will start preparing it for you."
+    assert data["reply"] == (
+        "Your order is confirmed, and we will start preparing it for you. "
+        "Will you be dining in or taking it takeaway?"
+    )
+    assert contains_arabic(data["reply"]) is False
+
+
+def test_confirmed_order_asks_fulfillment_then_preference_reply_is_not_duplicate_order(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="ضفت Classic Burger.",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "fulfillment-1", "عايز Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="تمام، الطلب اتأكد.",
+            order_detected=True,
+            order_finalized=False,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    confirmed = chat(client, "biz-1", "fulfillment-1", "تمام أكد الطلب")
+    calls_after_confirmation = len(fake_provider.structured_calls)
+
+    assert confirmed["order_finalized"] is True
+    assert "في المطعم" in confirmed["reply"]
+    assert "takeaway" in confirmed["reply"]
+
+    preference = chat(client, "biz-1", "fulfillment-1", "takeaway")
+
+    assert preference["reply"] == "تمام يا فندم، طلبك بيتجهز دلوقتي."
+    assert preference["order_detected"] is False
+    assert preference["order_finalized"] is False
+    assert preference["order_details"] is None
+    assert len(fake_provider.structured_calls) == calls_after_confirmation
+
+
+def test_english_no_more_items_finalizes_active_cart(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="Added Classic Burger. Would you like anything else with it?",
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+    chat(client, "biz-1", "natural-close-en-1", "I want Classic Burger")
+
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply="Would you like to confirm your order?",
+            order_detected=True,
+            order_finalized=False,
+        )
+    )
+    data = chat(client, "biz-1", "natural-close-en-1", "no thanks")
+    assert data["order_detected"] is True
+    assert data["order_finalized"] is True
+    assert data["order_details"]["items"][0]["name"] == "Classic Burger"
     assert contains_arabic(data["reply"]) is False
 
 
@@ -636,6 +774,40 @@ def test_customer_replies_are_egyptian_arabic_sanitized(client, fake_provider):
     assert not any(term in data["reply"] for term in forbidden)
 
 
+def test_reply_text_cleanup_removes_formatting_noise_and_preserves_content():
+    noisy = 'Assistant: ```json\n{"reply":"Classic Burger costs 120 EGP!!! 😊"}\n```'
+
+    assert ChatService._sanitize_reply_text(noisy) == "Classic Burger costs 120 EGP!"
+
+
+def test_reply_text_cleanup_repairs_mojibake_and_strips_invisible_characters():
+    noisy = "Reply: \u00d9\u0085\u00d8\u00b9\u00d9\u0084\u00d8\u00b4\u200f\u0007!!! Classic Burger   120"
+
+    cleaned = ChatService._sanitize_reply_text(noisy)
+
+    assert cleaned == "معلش! Classic Burger 120"
+    assert "\u200f" not in cleaned
+    assert "\u0007" not in cleaned
+
+
+def test_chat_reply_cleanup_keeps_contract_signals_and_item_payload(client, fake_provider):
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(
+            reply='Assistant: ```json\n{"reply":"تم إضافة Classic Burger!!! 😊"}\n```',
+            order_detected=True,
+            items=[OrderLineItem(name="Classic Burger", quantity=1, price=120)],
+        )
+    )
+
+    data = chat(client, "biz-1", "reply-cleanup-1", "عايز Classic Burger")
+
+    assert data["reply"] == "\u200Fضفت Classic Burger!"
+    assert data["order_detected"] is True
+    assert data["order_details"]["items"][0]["name"] == "Classic Burger"
+    assert data["order_details"]["items"][0]["price"] == 120
+
+
 def test_unavailable_and_invented_items_are_sanitized(client, fake_provider):
     sync(client, restaurant_kb())
     fake_provider.chat_outputs.append(
@@ -698,15 +870,15 @@ def test_llm_and_query_embedding_failures_return_503(client, fake_provider):
     assert response.status_code == 503
 
 
-def test_non_restaurant_kb_uses_generic_business_context(client, fake_provider):
+def test_chat_prompt_is_restaurant_and_cafe_oriented(client, fake_provider):
     sync(client, clinic_kb())
     fake_provider.chat_outputs.append(llm_chat_output(reply="Dental Cleaning متاحة يا فندم."))
     data = chat(client, "clinic-1", "clinic-session", "Tell me about Dental Cleaning")
     assert "Dental Cleaning" in data["reply"]
     text = prompt_text(fake_provider)
     assert "Dental Cleaning" in text
-    assert "products/services/items" in text
-    assert "restaurant" not in text.lower()
+    assert "restaurant or cafe" in text
+    assert "restaurant/cafe menu items" in text
 
 
 def test_analysis_chat_batch_calls_llm_after_pii_redaction(client, fake_provider):
@@ -953,7 +1125,6 @@ def test_manual_sample_kbs_validate_and_index(client):
     for name in [
         "business_kb_restaurant.json",
         "business_kb_cafe.json",
-        "business_kb_non_restaurant.json",
     ]:
         sample = Path("docs/manual_testing") / name
         assert sample.exists()

@@ -10,6 +10,8 @@ from app.core.provider import (
     get_chat_batch_analysis_service,
     get_chat_service,
     get_llm_provider,
+    get_owner_chat_service,
+    get_owner_report_service,
     get_report_generation_service,
 )
 from app.core.rate_limiter import limiter
@@ -19,6 +21,8 @@ from app.models.report import ReportGenerationResponse
 from app.services.business_knowledge_service import BusinessKnowledgeService
 from app.services.chat_batch_analysis_service import ChatBatchAnalysisService
 from app.services.chat_service import ChatService, CustomerChatLLMOutput
+from app.services.owner_chat_service import OwnerChatService
+from app.services.owner_report_service import OwnerReportService
 from app.services.pii_service import PIIService
 from app.services.report_generation_service import ReportGenerationService
 from app.services.session_memory import SessionMemoryStore
@@ -60,11 +64,19 @@ class FakeLLMProvider(LLMProvider):
     def __init__(self):
         self.embeddings = FakeEmbeddings()
         self.chat_outputs = []
+        self.owner_chat_outputs = []  # for OwnerChatService (uses provider.chat)
         self.analysis_outputs = []
         self.report_outputs = []
         self.structured_calls = []
+        self.chat_calls = []  # records messages passed to chat()
 
     async def chat(self, messages, model, temperature=0.7, max_tokens=1024):
+        self.chat_calls.append(messages)
+        if self.owner_chat_outputs:
+            output = self.owner_chat_outputs.pop(0)
+            if isinstance(output, Exception):
+                raise output
+            return output
         raise AIProviderError("chat should not be used in contract tests")
 
     async def structured_output(self, messages, model, output_model, temperature=0.0):
@@ -152,6 +164,7 @@ def client(fake_provider, tmp_path):
     knowledge = BusinessKnowledgeService(storage_dir=tmp_path / "business_kb")
     memory = SessionMemoryStore()
     pii = PIIService()
+    owner_report_svc = OwnerReportService(storage_dir=tmp_path / "owner_reports")
 
     app.dependency_overrides[get_llm_provider] = lambda: fake_provider
     app.dependency_overrides[get_business_knowledge_service] = lambda: knowledge
@@ -166,6 +179,11 @@ def client(fake_provider, tmp_path):
     )
     app.dependency_overrides[get_report_generation_service] = lambda: ReportGenerationService(
         llm_provider=fake_provider,
+    )
+    app.dependency_overrides[get_owner_report_service] = lambda: owner_report_svc
+    app.dependency_overrides[get_owner_chat_service] = lambda: OwnerChatService(
+        provider=fake_provider,
+        report_service=owner_report_svc,
     )
 
     with TestClient(app) as test_client:
@@ -212,3 +230,39 @@ def prompt_text(fake_provider):
         for call in fake_provider.structured_calls
         for message in call["messages"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared owner report fixture helpers
+# ---------------------------------------------------------------------------
+
+def make_sync_payload(
+    business_id: str = "biz-restaurant-demo",
+    business_name: str = "Demo Restaurant",
+    summary: str = "Customer service was mostly neutral with delivery complaints.",
+) -> dict:
+    """Return a valid OwnerReportSyncRequest payload dict for tests."""
+    return {
+        "business_id": business_id,
+        "business_name": business_name,
+        "period": {
+            "from": "2026-06-01T00:00:00Z",
+            "to": "2026-06-30T23:59:59Z",
+        },
+        "report": {
+            "businessId": business_id,
+            "period": {
+                "from": "2026-06-01T00:00:00Z",
+                "to": "2026-06-30T23:59:59Z",
+            },
+            "reportTitle": "Customer Experience Report",
+            "summary": summary,
+            "summaryAr": "ملخص باللغة العربية.",
+            "highlights": ["CreateOrder was the most common intent."],
+            "highlightsAr": ["Arabic highlight."],
+            "problems": [],
+            "recommendations": [],
+            "suggestedActions": ["Review delivery process this week."],
+            "riskLevel": "medium",
+        },
+    }
