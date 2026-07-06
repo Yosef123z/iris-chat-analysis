@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -52,6 +53,15 @@ _FORBIDDEN_REPLY_TERMS = {
     "module",
 }
 _ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u0870-\u089F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
+_MOJIBAKE_MARKERS = ("Ø", "Ù", "â", "Ã", "�")
+_LEADING_REPLY_LABEL_RE = re.compile(
+    r"^\s*(?:assistant|ai|iris|reply|response|answer|message)\s*[:：\-]\s*",
+    re.IGNORECASE,
+)
+_CODE_FENCE_RE = re.compile(r"```(?:json|text|markdown|md)?\s*|\s*```", re.IGNORECASE)
+_CONTROL_FORMAT_CATEGORIES = {"Cc", "Cf"}
+_DECORATIVE_SYMBOLS_RE = re.compile(r"[#*_~`]{2,}")
+_REPEATED_PUNCTUATION_RE = re.compile(r"([!?؟،,.])\1{1,}")
 
 
 def contains_arabic(text: str) -> bool:
@@ -83,14 +93,28 @@ _FINALIZATION_CUES = {
     "لا كدة تمام",
     "تمام كده",
     "تمام كدة",
+    "تمام كدا",
+    "خلاص تمام",
     "كفاية كده",
     "كفاية كدة",
+    "لا شكرا",
+    "لا شكرًا",
+    "لا مش عايز",
+    "لا مش عاوز",
+    "مش عايز حاجة تانية",
+    "مش عاوز حاجة تانية",
+    "مش محتاج حاجة تانية",
     "confirm order",
     "that's all",
     "that is all",
+    "that's it",
     "yes that's it",
     "yes confirm",
     "confirm it",
+    "no thanks",
+    "no thank you",
+    "nothing else",
+    "all good",
 }
 _CANCEL_CUES = {
     "الغى الاوردر",
@@ -165,6 +189,26 @@ _ORDER_ACTION_CUES = {
     "put",
     "i want",
 }
+_FULFILLMENT_PREFERENCE_CUES = {
+    "في المطعم",
+    "اكل في المطعم",
+    "آكل في المطعم",
+    "اكل هناك",
+    "آكل هناك",
+    "هنا",
+    "takeaway",
+    "تيك اواي",
+    "تيك أواي",
+    "اخده",
+    "هاخده",
+    "خارج",
+    "dine in",
+    "eat in",
+    "for here",
+    "to go",
+    "take out",
+    "takeout",
+}
 _ESCALATION_CUES = {
     "عايز أكلم المدير",
     "عايز اكلم المدير",
@@ -228,6 +272,69 @@ _INFORMATIONAL_ORDER_REPLY_CUES = {
     "تحب أضيف",
     "تأكيد الطلب",
     "تأكد الطلب",
+}
+_OPEN_ORDER_CONFIRMATION_REPLY_CUES = {
+    "تأكيد الطلب",
+    "تأكد الطلب",
+    "تأكيد الأوردر",
+    "تأكد الأوردر",
+    "أسجل الطلب",
+    "اسجل الطلب",
+    "أسجل الأوردر",
+    "اسجل الأوردر",
+    "متأكد",
+    "متأكدة",
+    "confirm the order",
+    "confirm your order",
+    "would you like to confirm",
+    "do you want to confirm",
+    "are you sure",
+    "shall i place",
+    "should i place",
+    "place the order",
+    "submit the order",
+}
+_OPEN_ORDER_FOLLOWUP_CUES = {
+    "حاجة تانية",
+    "تضيف",
+    "تزود",
+    "كمان",
+    "معاه",
+    "معاها",
+    "anything else",
+    "something else",
+    "add anything",
+    "add something",
+    "with it",
+    "with that",
+}
+_FULFILLMENT_QUESTION_REPLY_CUES = {
+    "في المطعم",
+    "تاكل في المطعم",
+    "تاكله في المطعم",
+    "تاكلي في المطعم",
+    "تاكليه في المطعم",
+    "takeaway",
+    "تيك اواي",
+    "تيك أواي",
+    "تاخده",
+    "تاخديه",
+    "توصيل",
+    "توصله",
+    "توصليه",
+    "يتوصلك",
+    "يوصلك",
+    "للبيت",
+    "على البيت",
+    "delivery",
+    "deliver",
+    "home delivery",
+    "dine in",
+    "eat in",
+    "for here",
+    "to go",
+    "take out",
+    "takeout",
 }
 _DIALECT_REPLACEMENTS = (
     ("هل ترغب في تأكيد الطلب؟", "تحب تأكد الطلب؟"),
@@ -298,6 +405,22 @@ class ChatService:
             )
 
         state = self.memory.get_or_create(request.session_id, request.business_id)
+        if state.awaiting_fulfillment_preference and self._has_fulfillment_preference_cue(request.message):
+            state.awaiting_fulfillment_preference = False
+            fulfillment_language = (
+                "ar"
+                if customer_language == "en"
+                and any(contains_arabic(turn.get("text", "")) for turn in state.messages[-6:])
+                else customer_language
+            )
+            reply = self._fulfillment_preference_reply(fulfillment_language)
+            self.memory.append_turn(state, request.message, reply)
+            return ChatResponse(
+                session_id=request.session_id,
+                reply=reply,
+                processing_time_ms=self._elapsed_ms(start_time),
+            )
+
         try:
             context = await self.knowledge.retrieve_context(
                 request.business_id,
@@ -336,14 +459,14 @@ class ChatService:
     ) -> list[dict[str, str]]:
         if customer_language == "ar":
             language_instruction = (
-                "The latest customer message contains Arabic text. Reply in natural Egyptian Arabic only. "
-                "Do not use Modern Standard Arabic."
+                "The latest customer message contains Arabic text. Reply in natural Egyptian Arabic only, "
+                "like a professional Egyptian customer service employee. Do not use stiff Modern Standard Arabic."
             )
             not_found_language = "natural Egyptian Arabic"
         else:
             language_instruction = (
-                "The latest customer message is entirely English. Reply in natural customer-service English only. "
-                "Do not use Arabic, and do not translate the customer's text back to Arabic."
+                "The latest customer message is entirely English. Reply in polished, natural customer-service "
+                "English only. Do not use Arabic, and do not translate the customer's text back to Arabic."
             )
             not_found_language = "natural customer-service English"
 
@@ -382,7 +505,9 @@ class ChatService:
         }
 
         system_prompt = (
-            "You are IRIS, a customer-facing digital employee for the specific business in the context. "
+            "You are IRIS, a customer-facing digital employee for the restaurant or cafe in the context. "
+            "Sound like a calm, smart, professional human restaurant/cafe customer service agent: helpful, respectful, "
+            "situation-aware, and concise. "
             "Use only the supplied business knowledge context for this business_id. Do not invent facts, prices, "
             f"policies, products, services, or availability. If information is not present, politely say in {not_found_language} "
             "that it is not available from the business data. "
@@ -390,12 +515,31 @@ class ChatService:
             "respectful. Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
             "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
             "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
+            "The reply field must contain plain, natural human text only. Do NOT use quotes (\"\") or backslashes around menu item names. "
+            "When listing menu items, use a simple inline dash format exactly like this: '- Item: description. - Item: description.' "
+            "Do not use code fences, markdown tables, raw JSON, assistant labels, emojis, decorative symbols, repeated punctuation, or strange characters. "
+            "Be logically aware that the customer is ordering from a restaurant/cafe context. Do not ask whether "
+            "the customer wants delivery, home delivery, or the order delivered to their house unless they explicitly "
+            "ask about delivery information. "
             "Never mention backend, API, contract, JSON, RAG, vector, embeddings, system, prompt, tools, "
-            "or implementation details in the customer-facing reply. Treat menu_items as canonical sellable "
-            "products/services/items for any business type. Use canonical item names exactly "
+            "or implementation details in the customer-facing reply. Treat menu_items as canonical restaurant/cafe "
+            "menu items. Use canonical item names exactly "
             "in order_details.items[].name. Do not translate canonical names. Respect is_available. Do not add or "
             "finalize unavailable or invented items. Suggest available alternatives when possible. Only finalize "
-            "an order after explicit customer confirmation. order_finalized=true always implies order_detected=true. "
+            "When a customer orders items, behave exactly like a real professional waiter or cafe cashier. "
+            "Acknowledge the item warmly and naturally (e.g. 'Perfect, added to your order'), keep the cart open, "
+            "and optionally suggest one relevant available add-on from the retrieved menu. "
+            "Do NOT ask for confirmation before every item. Do NOT say 'are you sure?'. Do NOT ask the customer "
+            "to 'confirm the order' or 'would you like to place the order' after every message. "
+            "Set order_finalized=true naturally when the customer's intent is clearly done: they say something like "
+            "'that's all', 'no thanks', 'بس كده', 'كده تمام', 'خلاص', 'بس', 'لا شكرا', or simply stop adding items "
+            "and indicate they are done. You do NOT need an explicit 'confirm' keyword — use natural human judgment. "
+            "After order_finalized=true, ask once whether they will dine in or take away. Do not call takeaway delivery. "
+            "Egyptian Arabic replies should be fluent, logical, and professional, like a real Egyptian customer service "
+            "employee speaking naturally — not a rigid script. English replies should be equally natural and professional. "
+            "order_finalized=true always implies order_detected=true. "
+            "If the customer is reporting an issue or complaining about a previous order, do NOT set order_detected=true or order_finalized=true. Handle the complaint naturally and empathetically. Only set ticket_detected=true. "
+            "When responding to a complaint, do NOT ask unnecessary questions like 'Can you give me more details about the order?'. Instead, assure them you will log the issue and follow up, and ask if they would like to speak to management. "
             "Return ticket, escalation, and feedback signals separately. Do not create any backend records."
         )
         output_schema = {
@@ -522,7 +666,13 @@ class ChatService:
                 fallback=ticket_details,
             )
 
-        reply = self._sanitize_dialect(output.reply.strip())
+        if ticket_detected or escalation_requested:
+            state.cart_items = []
+            order_detected = False
+            order_finalized = False
+            sanitized_details = None
+
+        reply = self._sanitize_reply_text(output.reply)
         if cancel_requested:
             reply = self._cancel_reply(
                 customer_language,
@@ -531,8 +681,11 @@ class ChatService:
             )
         elif unavailable_items:
             reply = self._unavailable_reply(request.business_id, unavailable_items, customer_language)
-        elif order_finalized and finalization_requested:
-            reply = self._order_finalized_reply(customer_language)
+        elif order_finalized:
+            # Trust the LLM's natural judgment — use the LLM's reply unless it lacks
+            # the dine-in/takeaway question, in which case append it.
+            if not ChatService._has_any_cue(reply, _FULFILLMENT_QUESTION_REPLY_CUES):
+                reply = self._order_finalized_reply(customer_language)
         elif escalation_detected and complaint_detected:
             reply = self._complaint_escalation_reply(customer_language)
         elif escalation_detected:
@@ -541,11 +694,22 @@ class ChatService:
             reply = self._complaint_reply(customer_language)
         elif finalization_requested and not order_finalized:
             reply = self._empty_finalization_reply(customer_language)
+
+        reply = self._sanitize_reply_text(reply)
+        if order_detected and not order_finalized and not finalization_requested and not informational_only:
+            reply = self._sanitize_open_order_reply(reply, customer_language)
+            reply = self._sanitize_reply_text(reply)
         if not reply or self._reply_has_internal_terms(reply):
             reply = self._safe_reply(customer_language, order_detected, ticket_detected, escalation_requested)
-        reply = self._sanitize_dialect(reply)
+        reply = self._sanitize_reply_text(reply)
         if informational_only and not unavailable_items and not cancel_requested:
             reply = self._sanitize_informational_reply(reply, customer_language)
+            reply = self._sanitize_reply_text(reply)
+        reply = self._ensure_natural_reply_direction(reply, customer_language)
+        if order_finalized:
+            state.awaiting_fulfillment_preference = True
+        elif cancel_requested:
+            state.awaiting_fulfillment_preference = False
 
         return ChatResponse(
             session_id=request.session_id,
@@ -580,6 +744,10 @@ class ChatService:
     @classmethod
     def _has_escalation_cue(cls, message: str) -> bool:
         return cls._has_any_cue(message, _ESCALATION_CUES)
+
+    @classmethod
+    def _has_fulfillment_preference_cue(cls, message: str) -> bool:
+        return cls._has_any_cue(message, _FULFILLMENT_PREFERENCE_CUES)
 
     @classmethod
     def _is_informational_query(cls, message: str) -> bool:
@@ -657,6 +825,90 @@ class ChatService:
         return sanitized
 
     @staticmethod
+    def _sanitize_reply_text(text: str) -> str:
+        sanitized = ChatService._repair_obvious_mojibake(text or "")
+        sanitized = unicodedata.normalize("NFKC", sanitized)
+        sanitized = _LEADING_REPLY_LABEL_RE.sub("", sanitized)
+        sanitized = sanitized.replace("\\r\\n", "\n").replace("\\n", "\n")
+        sanitized = _CODE_FENCE_RE.sub("", sanitized)
+        sanitized = ChatService._unwrap_reply_json(sanitized)
+        sanitized = re.sub(r"^\s*[-•·]+\s*", "", sanitized)
+        sanitized = sanitized.replace("\uFFFD", "")
+        sanitized = sanitized.replace("—", "-").replace("–", "-")
+        sanitized = sanitized.replace('"', '').replace("\\", "")
+        sanitized = sanitized.replace("“", '').replace("”", '')
+        sanitized = sanitized.replace("‘", "'").replace("’", "'")
+        sanitized = _DECORATIVE_SYMBOLS_RE.sub("", sanitized)
+        sanitized = _REPEATED_PUNCTUATION_RE.sub(r"\1", sanitized)
+        sanitized = "".join(
+            char
+            for char in sanitized
+            if unicodedata.category(char) not in _CONTROL_FORMAT_CATEGORIES
+        )
+        sanitized = ChatService._remove_unusual_symbols(sanitized)
+        sanitized = re.sub(r"\s+([,.!?؟،:;])", r"\1", sanitized)
+        sanitized = re.sub(r"([(\[{])\s+", r"\1", sanitized)
+        sanitized = re.sub(r"\s+([)\]}])", r"\1", sanitized)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip(" \t\r\n:-")
+        return ChatService._sanitize_dialect(sanitized)
+
+    @staticmethod
+    def _repair_obvious_mojibake(text: str) -> str:
+        marker_count = sum(text.count(marker) for marker in _MOJIBAKE_MARKERS)
+        if marker_count < 2:
+            return text
+        latin1_source = "".join(char for char in text if ord(char) <= 255)
+        try:
+            repaired = latin1_source.encode("latin1").decode("utf-8")
+        except UnicodeError:
+            try:
+                repaired = text.encode("cp1252", errors="ignore").decode("utf-8")
+            except UnicodeError:
+                return text
+        if contains_arabic(repaired) or repaired.count("�") < text.count("�"):
+            return repaired
+        return text
+
+    @staticmethod
+    def _unwrap_reply_json(text: str) -> str:
+        stripped = text.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            return text
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            return text
+        reply = payload.get("reply") if isinstance(payload, dict) else None
+        return reply if isinstance(reply, str) and reply.strip() else text
+
+    @staticmethod
+    def _remove_unusual_symbols(text: str) -> str:
+        kept: list[str] = []
+        for char in text:
+            category = unicodedata.category(char)
+            if category in {"So", "Sk"}:
+                continue
+            kept.append(char)
+        return "".join(kept)
+
+    @staticmethod
+    def _ensure_natural_reply_direction(reply: str, customer_language: str) -> str:
+        if customer_language != "ar":
+            return reply
+        stripped = reply.lstrip()
+        if not stripped or not contains_arabic(reply):
+            return reply
+            
+        result = reply
+        if not _ARABIC_CHAR_RE.match(stripped):
+            result = f"تمام يا فندم، {reply}"
+        
+        # Ensure Right-To-Left directionality for mixed text
+        if not result.startswith("\u200F"):
+            result = "\u200F" + result
+        return result
+
+    @staticmethod
     def _missing_business_data_reply(customer_language: str) -> str:
         if customer_language == "en":
             return (
@@ -671,8 +923,17 @@ class ChatService:
     @staticmethod
     def _order_finalized_reply(customer_language: str) -> str:
         if customer_language == "en":
-            return "Your order is confirmed. We will start preparing it for you."
-        return "تمام يا فندم هنبدأ نجهزه لحضرتك."
+            return (
+                "Your order is confirmed, and we will start preparing it for you. "
+                "Will you be dining in or taking it takeaway?"
+            )
+        return "تمام يا فندم، كده الطلب اتأكد وهنبدأ نجهزه لحضرتك. تحب تاكل في المطعم ولا تاخده takeaway؟"
+
+    @staticmethod
+    def _fulfillment_preference_reply(customer_language: str) -> str:
+        if customer_language == "en":
+            return "Perfect, we will prepare your order for you now."
+        return "تمام يا فندم، طلبك بيتجهز دلوقتي."
 
     @staticmethod
     def _complaint_escalation_reply(customer_language: str) -> str:
@@ -757,6 +1018,89 @@ class ChatService:
         if customer_language == "en":
             return "Tell me if you would like more details."
         return "لو تحب تعرف تفاصيل أكتر، قولي."
+
+    # Aggressive confirmation-question patterns that should be stripped from open-order replies.
+    # These are things like "Would you like to confirm your order?" / "Shall I place the order?"
+    # or Arabic equivalents — unnatural mid-conversation asks. Natural acknowledgments are kept.
+    _AGGRESSIVE_CONFIRMATION_PATTERNS = re.compile(
+        r"(?i)"
+        # English patterns
+        r"(would you like (me )?to (confirm|place|submit|finalize) (your |the )?order"
+        r"|shall i (place|submit|confirm|finalize) (your |the )?order"
+        r"|should i (place|submit|confirm) (your |the )?order"
+        r"|do you want (me )?to (confirm|place|submit) (your |the )?order"
+        r"|are you sure (about |with )?(your |the )?order"
+        # Arabic Fosha patterns
+        r"|هل تريد تأكيد الطلب"
+        r"|هل تريد تسجيل الطلب"
+        r"|هل تريد إتمام الطلب"
+        r"|هل ترغب في تأكيد الطلب"
+        r"|هل ترغب في تسجيل الطلب"
+        r"|هل ترغب في إتمام الطلب"
+        r"|هل تود تأكيد الطلب"
+        r"|هل تود تسجيل الطلب"
+        # Egyptian Arabic patterns
+        r"|تحب تأكد الطلب"
+        r"|تحب تأكيد الطلب"
+        r"|تحب تسجل الطلب"
+        r"|تحب تسجيل الطلب"
+        r"|تحب اسجل الطلب"
+        r"|عايز تأكد الطلب"
+        r"|عايز تأكيد الطلب"
+        r"|عايز تسجل الطلب"
+        r"|نأكد الطلب"
+        r"|هنأكد الطلب"
+        r")"
+    )
+
+
+    @staticmethod
+    def _sanitize_open_order_reply(reply: str, customer_language: str) -> str:
+        """Remove aggressive confirmation-request and premature fulfillment-question sentences.
+
+        Strips sentences that:
+        1. Ask the customer to 'confirm/place/submit the order' mid-conversation.
+        2. Ask about dine-in / delivery / takeaway before the order is finalized.
+
+        Natural acknowledgments and "anything else?" suggestions are preserved.
+        If bad sentences were stripped and no follow-up offer remains, one is appended.
+        """
+        sentences = re.split(r"(?<=[.!?؟])\s+", reply)
+        stripped_any = False
+        kept = []
+        for s in sentences:
+            stripped = s.strip()
+            if not stripped:
+                continue
+            if ChatService._AGGRESSIVE_CONFIRMATION_PATTERNS.search(stripped):
+                stripped_any = True
+                continue
+            if ChatService._has_any_cue(stripped, _FULFILLMENT_QUESTION_REPLY_CUES):
+                stripped_any = True
+                continue
+            kept.append(stripped)
+
+        if not kept:
+            # Everything was stripped — return a safe natural fallback.
+            return (
+                "Got it! Anything else you'd like to add?"
+                if customer_language == "en"
+                else "تمام يا فندم، ضفت طلبك. تحب تضيف حاجة تانية؟"
+            )
+
+        result = " ".join(kept)
+
+        # If we stripped bad sentences and no natural follow-up is already present, add one.
+        if stripped_any and not ChatService._has_any_cue(result, _OPEN_ORDER_FOLLOWUP_CUES):
+            followup = (
+                "Anything else you'd like to add?"
+                if customer_language == "en"
+                else "تحب تضيف حاجة تانية؟"
+            )
+            result = f"{result} {followup}"
+
+        return result
+
 
     def _sanitize_order_details(
         self,

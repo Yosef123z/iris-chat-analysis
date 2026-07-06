@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     )
 
     OWNER_ANALYTICS_REPORT_DIR: str = "app/data/uploads"
+    OWNER_REPORT_STORAGE_DIR: str = "storage/owner_reports"
     BUSINESS_KB_STORAGE_DIR: str = "storage/business_kb"
     SESSION_TTL_HOURS: int = Field(
         2,

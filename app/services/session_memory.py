@@ -15,6 +15,7 @@ class SessionState:
     messages: list[dict[str, str]] = field(default_factory=list)
     cart_items: list[OrderLineItem] = field(default_factory=list)
     handoff_active: bool = False
+    awaiting_fulfillment_preference: bool = False
     last_active: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

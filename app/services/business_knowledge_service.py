@@ -329,20 +329,25 @@ class BusinessKnowledgeService:
     @staticmethod
     def _looks_like_catalog_request(query: str) -> bool:
         normalized = normalize_text(query)
-        terms = {
-            "menu",
-            "products",
-            "services",
-            "items",
-            "price",
-            "prices",
-            "منيو",
-            "منتجات",
-            "خدمات",
-            "اسعار",
-            "سعر",
+        
+        # Core keywords where any substring match indicates catalog request
+        keywords = {
+            "menu", "catalog", "product", "service", "item", "price", "list", "offer",
+            "منيو", "كتالوج", "منتج", "خدمه", "خدمة", "سعر", "اسعار", "اصناف", "أصناف",
+            "قائمه", "قائمة", "قايمه", "قايمة", "عرض", "عروض", "اكلات", "مشروبات"
         }
-        return any(normalize_text(term) in normalized for term in terms)
+        if any(normalize_text(kw) in normalized for kw in keywords):
+            return True
+            
+        # Natural phrases (normalized) that ask "what do you have / what is there"
+        phrases = {
+            "what do you have", "what is available", "what's available", "what is there", 
+            "what's there", "what you have", "what do you offer", "what you offer",
+            "عندك ايه", "عندكم ايه", "عندكو ايه", "عندكوا ايه", "موجود ايه", "فيه ايه", "في ايه",
+            "ايه المتاح", "متاح ايه", "ايه عندك", "ايه عندكم", "ايه عندكوا", "ايه اللي عندكم", 
+            "ايه الي عندكم", "عندك اكل", "عندكم اكل", "عندك شرب", "عندكم شرب"
+        }
+        return any(normalize_text(phrase) in normalized for phrase in phrases)
 
     def find_menu_item(
         self,
