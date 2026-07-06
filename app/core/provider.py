@@ -10,6 +10,7 @@ from app.services.chat_batch_analysis_service import ChatBatchAnalysisService
 from app.services.chat_service import ChatService
 from app.services.health_service import HealthCheckService
 from app.services.owner_chat_service import OwnerChatService
+from app.services.owner_report_service import OwnerReportService
 from app.services.pii_service import PIIService
 from app.services.report_generation_service import ReportGenerationService
 from app.services.session_memory import SessionMemoryStore
@@ -69,7 +70,7 @@ def clear_provider_caches() -> None:
     get_chat_service.cache_clear()
     get_chat_batch_analysis_service.cache_clear()
     get_report_generation_service.cache_clear()
-    get_analytics_service.cache_clear()
+    get_owner_report_service.cache_clear()
     get_owner_chat_service.cache_clear()
     get_health_service.cache_clear()
 
@@ -80,10 +81,15 @@ def get_analytics_service() -> AnalyticsService:
 
 
 @lru_cache
+def get_owner_report_service() -> OwnerReportService:
+    return OwnerReportService(storage_dir=settings.OWNER_REPORT_STORAGE_DIR)
+
+
+@lru_cache
 def get_owner_chat_service() -> OwnerChatService:
     return OwnerChatService(
         provider=get_llm_provider(),
-        analytics_service=get_analytics_service(),
+        report_service=get_owner_report_service(),
     )
 
 
@@ -122,6 +128,7 @@ chat_service: ChatService = _LazyProxy(get_chat_service)  # type: ignore[assignm
 chat_batch_analysis_service: ChatBatchAnalysisService = _LazyProxy(get_chat_batch_analysis_service)  # type: ignore[assignment]
 report_generation_service: ReportGenerationService = _LazyProxy(get_report_generation_service)  # type: ignore[assignment]
 analytics_service: AnalyticsService = _LazyProxy(get_analytics_service)  # type: ignore[assignment]
+owner_report_service: OwnerReportService = _LazyProxy(get_owner_report_service)  # type: ignore[assignment]
 owner_chat_service: OwnerChatService = _LazyProxy(get_owner_chat_service)  # type: ignore[assignment]
 health_service: HealthCheckService = _LazyProxy(get_health_service)  # type: ignore[assignment]
 
@@ -136,6 +143,7 @@ __all__ = [
     "chat_batch_analysis_service",
     "report_generation_service",
     "analytics_service",
+    "owner_report_service",
     "owner_chat_service",
     "health_service",
     "get_llm_provider",
@@ -146,6 +154,7 @@ __all__ = [
     "get_chat_batch_analysis_service",
     "get_report_generation_service",
     "get_analytics_service",
+    "get_owner_report_service",
     "get_owner_chat_service",
     "get_health_service",
     "clear_provider_caches",
