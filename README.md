@@ -16,16 +16,18 @@ IRIS is a FastAPI AI service for backend integration. It exposes business knowle
 
 Auxiliary owner analytics routes may be used by the dashboard:
 
+- `POST /api/v1/owner/reports/sync`
 - `POST /api/v1/owner/chat`
-- `GET /api/v1/owner/report`
-- `POST /api/v1/owner/reload`
 
 ## Runtime Model
 
 - Business KB sync uses snake_case and builds/replaces an in-memory vector index by `business_id`.
-- Chat uses snake_case and performs LLM-backed RAG over only the synced KB for the request business.
+- Customer Chat uses snake_case and performs LLM-backed RAG over **only** the synced Business Knowledge Base for the request business.
 - Analysis uses camelCase and calls the LLM after PII redaction.
-- Report generation uses camelCase and is called by the .NET backend with already aggregated analysis results.
+- Report generation uses camelCase and is called by the backend with already aggregated analysis results.
+- Owner Chat is grounded in the latest synced owner report context pushed via `POST /api/v1/owner/reports/sync`. The synced context now contains both the generated `report` and raw backend `metrics`.
+- Owner Chat uses raw `metrics` first for factual questions (menu items, prices, availability, FAQs, orders, tickets, best sellers) and the generated `report` sections for summaries, problems, recommendations, and risk.
+- Owner Chat metrics update only when a new report is generated/synced. Real-time owner menu sync is a separate future request.
 - Session/cart memory is temporary and expires after roughly two hours.
 - The AI returns order, ticket, escalation, and feedback signals only.
 - The backend owns all permanent records and persistence.
