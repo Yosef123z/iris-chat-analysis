@@ -478,3 +478,221 @@ def test_owner_chat_english_message_gets_english_no_data_reply(client, fake_prov
     data = owner_chat(client, "biz-restaurant-demo", "enforce-en-1", "What was today's revenue?")
     assert data["reply"] == "Sorry, that information is not available in the current report."
     assert not any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+
+
+# ---------------------------------------------------------------------------
+# Metrics-first owner chat behavior
+# ---------------------------------------------------------------------------
+
+
+def test_owner_chat_prompt_contains_metrics(client, fake_provider):
+    """The synced metrics must appear in the owner chat prompt context."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("You have Classic Burger on the menu.")
+
+    owner_chat(client, "biz-restaurant-demo", "metrics-prompt-1", "What is on the menu?")
+
+    assert len(fake_provider.chat_calls) == 1
+    prompt = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
+    assert "SYNCED_OWNER_CONTEXT" in prompt
+    assert "menuItemsList" in prompt
+    assert "Classic Burger" in prompt
+
+
+def test_owner_chat_uses_menu_items_list(client, fake_provider):
+    """Menu questions must be grounded in metrics.menuItemsList."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("You have Classic Burger and Lemon Mint.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "menu-1", "What do I have in the menu?")
+
+    assert "Classic Burger" in data["reply"]
+    assert "metrics.menuItemsList" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_menu_items_list_for_price(client, fake_provider):
+    """Price answers must match metrics.menuItemsList exactly."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("Classic Burger costs 120 EGP.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "price-1", "How much is Classic Burger?")
+
+    assert "120" in data["reply"]
+    assert "metrics.menuItemsList" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_menu_items_list_for_availability(client, fake_provider):
+    """Availability answers must match metrics.menuItemsList[].isAvailable."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("Crispy Chicken Burger is not available right now.")
+
+    data = owner_chat(
+        client, "biz-restaurant-demo", "avail-1", "Is Crispy Chicken Burger available?"
+    )
+
+    assert "not available" in data["reply"].lower() or "مش متاح" in data["reply"]
+    assert "metrics.menuItemsList" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_faq_list(client, fake_provider):
+    """FAQ questions must be answered from metrics.faqList."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("Delivery usually takes 30 to 45 minutes.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "faq-1", "What is the delivery time?")
+
+    assert "30 to 45 minutes" in data["reply"]
+    assert "metrics.faqList" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_order_metrics(client, fake_provider):
+    """Order-count questions must use metrics orders fields."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("You received 12 orders today.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "orders-1", "How many orders came today?")
+
+    assert "12" in data["reply"]
+    assert "metrics.orderMetrics" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_ticket_metrics(client, fake_provider):
+    """Ticket questions must use metrics ticket fields."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("You have 3 open tickets and 1 escalated ticket.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "tickets-1", "How many open tickets do I have?")
+
+    assert "3" in data["reply"]
+    assert "metrics.ticketMetrics" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_top_ordered_items(client, fake_provider):
+    """Best-seller questions must use metrics.topOrderedItems."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("Your best-selling item is Classic Burger.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "best-1", "What is my best-selling item?")
+
+    assert "Classic Burger" in data["reply"]
+    assert "metrics.topOrderedItems" in data["data_sources_used"]
+
+
+def test_owner_chat_uses_report_sections_for_recommendations(client, fake_provider):
+    """Summary/recommendation/risk questions must use report sections."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("I recommend reviewing the delivery process this week.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "rec-1", "What are your recommendations?")
+
+    assert "review" in data["reply"].lower()
+    assert "report.sections" in data["data_sources_used"]
+
+
+def test_owner_chat_missing_metric_returns_low_confidence(client, fake_provider):
+    """If the requested factual metric is absent, return low confidence without LLM."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics()
+    payload["metrics"] = {}  # no menu/FAQ metrics at all
+    sync_report(client, payload)
+
+    data = owner_chat(client, "biz-restaurant-demo", "missing-1", "What do I have in the menu?")
+
+    assert data["confidence"] == "low"
+    assert len(fake_provider.chat_calls) == 0
+    assert not any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+
+
+def test_owner_chat_business_isolation_with_metrics(client, fake_provider):
+    """Metrics from business A must not leak into business B replies or prompts."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload_a = make_sync_payload_with_metrics(
+        business_id="biz-a",
+        business_name="Business A",
+        menuItemsList=[
+            {
+                "name": "A Special",
+                "description": "A only",
+                "price": 100,
+                "category": "Main",
+                "isAvailable": True,
+            }
+        ],
+    )
+    payload_b = make_sync_payload_with_metrics(
+        business_id="biz-b",
+        business_name="Business B",
+        menuItemsList=[
+            {
+                "name": "B Special",
+                "description": "B only",
+                "price": 200,
+                "category": "Main",
+                "isAvailable": True,
+            }
+        ],
+    )
+    sync_report(client, payload_a)
+    sync_report(client, payload_b)
+
+    fake_provider.owner_chat_outputs.append("You have A Special.")
+    data_a = owner_chat(client, "biz-a", "iso-a", "What is on the menu?")
+    prompt_a = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
+    assert "A Special" in prompt_a
+    assert "B Special" not in prompt_a
+    assert "A Special" in data_a["reply"]
+
+    fake_provider.owner_chat_outputs.append("You have B Special.")
+    data_b = owner_chat(client, "biz-b", "iso-b", "What is on the menu?")
+    prompt_b = "\n".join(msg["content"] for msg in fake_provider.chat_calls[1])
+    assert "B Special" in prompt_b
+    assert "A Special" not in prompt_b
+    assert "B Special" in data_b["reply"]
+
+
+def test_owner_chat_sanitizes_internal_terms(client, fake_provider):
+    """Replies containing internal implementation terms must be replaced with a safe fallback."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("The backend API database says you have 12 orders.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "sanitize-1", "How many orders today?")
+
+    assert data["confidence"] == "low"
+    assert "backend" not in data["reply"].lower()
+    assert "api" not in data["reply"].lower()
+    assert "database" not in data["reply"].lower()
+
+
+def test_owner_chat_hallucinated_menu_item_returns_fallback(client, fake_provider):
+    """A reply that invents a menu item not present in metrics must be rejected."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("You should add Pizza Margherita for 95 EGP.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "hallucination-1", "What do I have in the menu?")
+
+    assert data["confidence"] == "low"
+    assert "Pizza Margherita" not in data["reply"]

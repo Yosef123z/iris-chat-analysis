@@ -252,7 +252,8 @@ def test_chat_calls_llm_and_prompt_is_grounded(client, fake_provider):
     assert "customer-service English" in text
     assert '"detected_customer_language": "en"' in text
     assert "Do not invent" in text
-    assert "Never mention backend" in text
+    assert "Never mention internal system details" in text
+    assert "backend" in text
     assert "real professional waiter or cafe cashier" in text
     assert "Egyptian customer service employee" in text
 
@@ -1131,3 +1132,15 @@ def test_manual_sample_kbs_validate_and_index(client):
         payload = json.loads(sample.read_text(encoding="utf-8"))
         BusinessKnowledgeSyncRequest.model_validate(payload)
         sync(client, payload)
+
+
+def test_customer_chat_missing_info_returns_polite_fallback(client, fake_provider):
+    """Asking about a product/offer not in the KB must not hallucinate."""
+    sync(client, restaurant_kb())
+    fake_provider.chat_outputs.append(
+        llm_chat_output(reply="Sorry, we do not currently offer Pizza Margherita.")
+    )
+    data = chat(client, "biz-1", "missing-info-1", "Do you have Pizza Margherita?")
+    assert data["reply"]
+    assert "Pizza Margherita" not in data["reply"] or "not" in data["reply"].lower()
+    assert data["order_detected"] is False
