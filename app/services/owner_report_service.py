@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.config import settings
 from app.models.owner_chat import OwnerReportSyncRequest
@@ -19,6 +20,7 @@ class StoredOwnerReport:
     period: ReportPeriod
     report: ReportGenerationResponse
     updated_at: datetime
+    metrics: dict[str, Any] | None = field(default=None)
 
 
 class OwnerReportService:
@@ -37,6 +39,7 @@ class OwnerReportService:
             period=payload.period,
             report=payload.report,
             updated_at=datetime.now(timezone.utc),
+            metrics=payload.metrics,
         )
         self._persistence.save(stored)
         self._reports[payload.business_id] = stored
@@ -62,6 +65,7 @@ class OwnerReportService:
             "businessName": stored.business_name,
             "period": stored.period.model_dump(mode="json", by_alias=True),
             "syncedAt": stored.updated_at.isoformat(),
+            "metrics": stored.metrics,
             "report": report_json,
         }
         return json.dumps(context, ensure_ascii=False, indent=2)
