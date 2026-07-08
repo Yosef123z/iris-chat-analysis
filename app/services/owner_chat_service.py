@@ -68,10 +68,12 @@ INTENT_ORDERS_IN_PERIOD = "ORDERS_IN_PERIOD"
 INTENT_ORDERS_TOTAL_DETECTED = "ORDERS_TOTAL_DETECTED"
 INTENT_TICKETS_OPEN = "TICKETS_OPEN"
 INTENT_TICKETS_ESCALATED = "TICKETS_ESCALATED"
+INTENT_TICKETS_OPEN_AND_ESCALATED = "TICKETS_OPEN_AND_ESCALATED"
 INTENT_TICKETS_THIS_WEEK = "TICKETS_THIS_WEEK"
 INTENT_RECENT_OPEN_TICKETS = "RECENT_OPEN_TICKETS"
 INTENT_BEST_SELLERS = "BEST_SELLERS"
 INTENT_COMMON_ISSUES = "COMMON_ISSUES"
+INTENT_UNSUPPORTED_FACTUAL_METRIC = "UNSUPPORTED_FACTUAL_METRIC"
 
 _FACTUAL_INTENTS = {
     INTENT_MENU_LIST, INTENT_MENU_PRICE, INTENT_MENU_AVAILABILITY,
@@ -79,9 +81,9 @@ _FACTUAL_INTENTS = {
     INTENT_FAQ_LIST, INTENT_FAQ_ANSWER,
     INTENT_ORDERS_TODAY, INTENT_ORDERS_THIS_WEEK,
     INTENT_ORDERS_IN_PERIOD, INTENT_ORDERS_TOTAL_DETECTED,
-    INTENT_TICKETS_OPEN, INTENT_TICKETS_ESCALATED,
+    INTENT_TICKETS_OPEN, INTENT_TICKETS_ESCALATED, INTENT_TICKETS_OPEN_AND_ESCALATED,
     INTENT_TICKETS_THIS_WEEK, INTENT_RECENT_OPEN_TICKETS,
-    INTENT_BEST_SELLERS, INTENT_COMMON_ISSUES,
+    INTENT_BEST_SELLERS, INTENT_COMMON_ISSUES, INTENT_UNSUPPORTED_FACTUAL_METRIC,
 }
 
 # Report / LLM intents
@@ -253,6 +255,16 @@ def _classify_intent(message: str) -> str:
         return INTENT_BEST_SELLERS
 
     # ------------------------------------------------------------------ #
+    # 1.5 UNSUPPORTED FACTUAL METRIC                                      #
+    # ------------------------------------------------------------------ #
+    if has(
+        "revenue yesterday", "sales yesterday", "profit yesterday",
+        "total revenue yesterday", "income yesterday",
+        "صافي الربح امبارح", "الايراد امبارح", "المبيعات امبارح", "الدخل امبارح"
+    ):
+        return INTENT_UNSUPPORTED_FACTUAL_METRIC
+
+    # ------------------------------------------------------------------ #
     # 2. COMMON_ISSUES — most common / frequent / top problem             #
     # Check BEFORE tickets so 'most common complaint/shikawa' routes here #
     # ------------------------------------------------------------------ #
@@ -269,10 +281,21 @@ def _classify_intent(message: str) -> str:
     ):
         return INTENT_COMMON_ISSUES
 
+    # Extract order/ticket signals early to prevent MENU_PRICE swallowing 'كام' questions
+    is_order = has(
+        "order", "orders", "request", "requests",
+        "طلب", "طلبات", "اوردر",
+    )
+    is_ticket = has(
+        "ticket", "tickets", "complaint", "complaints",
+        "تذكره", "تذكرة", "تذاكر", "شكوى", "شكاوى",
+    )
+
     # ------------------------------------------------------------------ #
     # 3. MENU_PRICE — before MENU_LIST                                    #
+    # Guard against order/ticket questions that use 'how much' or 'كام'   #
     # ------------------------------------------------------------------ #
-    if has(
+    if not is_order and not is_ticket and has(
         "price", "cost", "how much", "how much is", "what is the price",
         "price of", "cost of", "item price", "menu price", "how much does",
         # Arabic
@@ -280,12 +303,22 @@ def _classify_intent(message: str) -> str:
     ):
         return INTENT_MENU_PRICE
 
+    # Shared generic menu list signals to exclude from specific item intents
+    _menu_list_signals = (
+        "on the menu", "in the menu", "on your menu",
+        "what do you have", "what do you offer",
+        "what do you sell", "all items", "list",
+        "في المنيو", "على المنيو", "عندك ايه", "عندي ايه",
+        "موجود ايه", "الاصناف", "الاطباق",
+    )
+
     # ------------------------------------------------------------------ #
     # 4. MENU_AVAILABILITY — before MENU_LIST                             #
     # Only trigger when NOT asking about 'risk level' or 'what is on'     #
     # ------------------------------------------------------------------ #
-    # Guard: 'risk level' should not match 'level' under availability
-    if not has("risk level", "risk") and has(
+    # Guard: 'risk level' should not match 'level' under availability,
+    # and generic list signals should not match 'do you have' / 'عندك'
+    if not has("risk level", "risk") and not any(s in n for s in _menu_list_signals) and has(
         "is it available", "do you have",
         "in stock", "out of stock",
         # Arabic
@@ -295,21 +328,13 @@ def _classify_intent(message: str) -> str:
         return INTENT_MENU_AVAILABILITY
     # 'available' / 'availability' by themselves (English) — but not when preceded by 'not'
     # or when the question is about a risk/report context
-    if has("available", "availability") and not has("risk", "report", "recommendation"):
+    if has("available", "availability") and not has("risk", "report", "recommendation") and not any(s in n for s in _menu_list_signals):
         return INTENT_MENU_AVAILABILITY
 
     # ------------------------------------------------------------------ #
     # 5. MENU_DESCRIPTION — only when asking about a SPECIFIC item,      #
     #    NOT when asking 'what is on the menu' / 'what is available'      #
     # ------------------------------------------------------------------ #
-    # Exclude generic menu-list phrases from MENU_DESCRIPTION
-    _menu_list_signals = (
-        "on the menu", "in the menu", "on your menu",
-        "do you have", "what do you have", "what do you offer",
-        "what do you sell", "all items", "list",
-        "في المنيو", "على المنيو", "عندك ايه", "عندي ايه",
-        "موجود ايه", "الاصناف", "الاطباق",
-    )
     if has(
         "describe", "description",
         "what contain", "what's in", "whats in",
@@ -353,15 +378,42 @@ def _classify_intent(message: str) -> str:
         return INTENT_MENU_LIST
 
     # ------------------------------------------------------------------ #
+    # 7.5 Analytical Guard for FAQ/Orders/Tickets                         #
+    # ------------------------------------------------------------------ #
+    if has(
+        "report", "summary", "summarize", "analyze", "analysis", "insight",
+        "problem", "issue", "complaint", "recommend", "recommendation", "risk",
+        # Arabic
+        "تقرير", "ملخص", "تحليل", "مشكله", "مشاكل", "شكوى", "شكاوى",
+        "توصيه", "توصيات", "خطر", "مخاطر",
+    ):
+        if has("summary", "summarize", "overview", "ملخص", "نظره عامه", "نظرة عامة"):
+            return INTENT_REPORT_SUMMARY
+        if has("highlight", "مميزات", "ابرز"):
+            return INTENT_REPORT_HIGHLIGHTS
+        if has("problem", "issue", "complaint", "مشكله", "مشاكل", "شكوى", "شكاوى"):
+            return INTENT_REPORT_PROBLEMS
+        if has("recommend", "suggestion", "suggest", "recommendation", "توصيه", "توصيات", "اقتراح"):
+            return INTENT_REPORT_RECOMMENDATIONS
+        if has("action", "next step", "خطوه", "خطوات"):
+            return INTENT_REPORT_ACTIONS
+        if has("risk", "خطر", "مخاطر"):
+            return INTENT_REPORT_RISK
+        return INTENT_GENERAL_ANALYTICAL
+
+    # ------------------------------------------------------------------ #
     # 8. FAQ                                                              #
     # ------------------------------------------------------------------ #
     if has(
         "faq", "frequently asked", "common question",
         "working hours", "opening hours", "delivery time", "return policy",
         "refund", "policy",
+        "delivery hours", "delivery schedule", "delivery times", "deliver hours",
+        "when do you deliver", "what time do you deliver",
         # Arabic
         "سؤال", "اسئلة", "سياسة", "مواعيد", "ساعات",
         "استرجاع", "استرداد",
+        "مواعيد التوصيل", "ساعات التوصيل", "بتوصل امتى", "التوصيل امتى",
     ):
         # If there seems to be a specific question query, use FAQ_ANSWER
         return INTENT_FAQ_ANSWER if len(message.strip()) > 20 else INTENT_FAQ_LIST  # noqa: PLR2004
@@ -369,10 +421,6 @@ def _classify_intent(message: str) -> str:
     # ------------------------------------------------------------------ #
     # 9. Orders — timeframe sub-intents                                   #
     # ------------------------------------------------------------------ #
-    is_order = has(
-        "order", "orders", "request", "requests",
-        "طلب", "طلبات", "اوردر",
-    )
     if is_order:
         if has("today", "النهارده", "اليوم"):
             return INTENT_ORDERS_TODAY
@@ -391,12 +439,12 @@ def _classify_intent(message: str) -> str:
     # ------------------------------------------------------------------ #
     # 10. Tickets — sub-intents                                           #
     # ------------------------------------------------------------------ #
-    is_ticket = has(
-        "ticket", "tickets", "complaint", "complaints",
-        "تذكره", "تذاكر", "شكوى", "شكاوى",
-    )
     if is_ticket:
-        if has("escalat", "مرفوع", "متصاعد"):
+        has_escalated = has("escalat", "مرفوع", "متصاعد")
+        has_open = has("open", "مفتوح")
+        if has_escalated and has_open:
+            return INTENT_TICKETS_OPEN_AND_ESCALATED
+        if has_escalated:
             return INTENT_TICKETS_ESCALATED
         if has("this week", "الاسبوع"):
             return INTENT_TICKETS_THIS_WEEK
@@ -460,16 +508,20 @@ def _build_deterministic_answer(
             return _answer_menu_list(items, is_arabic), [_DS_MENU], "high"
 
         if intent == INTENT_MENU_PRICE:
-            return _answer_menu_price(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_price(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_AVAILABILITY:
-            return _answer_menu_availability(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_availability(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_DESCRIPTION:
-            return _answer_menu_description(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_description(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_CATEGORY:
-            return _answer_menu_category(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_category(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
     # ------------------------------------------------------------------ #
     # FAQ intents                                                         #
@@ -487,7 +539,8 @@ def _build_deterministic_answer(
             return f"Available FAQ topics: {', '.join(questions)}.", [_DS_FAQ], "high"
 
         # FAQ_ANSWER — find best match
-        return _answer_faq(message, faqs, is_arabic), [_DS_FAQ], "high"
+        ans = _answer_faq(message, faqs, is_arabic)
+        return (ans, [_DS_FAQ], "high") if ans else (None, [], "low")
 
     # ------------------------------------------------------------------ #
     # Order intents                                                       #
@@ -543,6 +596,15 @@ def _build_deterministic_answer(
             return f"عدد التذاكر المتصاعدة {val}.", [_DS_TICKETS], "high"
         return f"There are {val} escalated ticket(s).", [_DS_TICKETS], "high"
 
+    if intent == INTENT_TICKETS_OPEN_AND_ESCALATED:
+        open_val = metrics.get("openTicketsCount")
+        esc_val = metrics.get("escalatedTicketsCount")
+        if open_val is None or esc_val is None:
+            return None, [], "low"
+        if is_arabic:
+            return f"عندك {open_val} تذكرة مفتوحة و{esc_val} تذكرة متصاعدة.", [_DS_TICKETS], "high"
+        return f"You currently have {open_val} open ticket(s) and {esc_val} escalated ticket(s).", [_DS_TICKETS], "high"
+
     if intent == INTENT_TICKETS_THIS_WEEK:
         val = metrics.get("ticketsThisWeek")
         if val is None:
@@ -570,6 +632,12 @@ def _build_deterministic_answer(
         if not top_items:
             return None, [], "low"
         return _answer_best_sellers(top_items, is_arabic), [_DS_TOP_ITEMS], "high"
+
+    # ------------------------------------------------------------------ #
+    # UNSUPPORTED FACTUAL METRIC                                          #
+    # ------------------------------------------------------------------ #
+    if intent == INTENT_UNSUPPORTED_FACTUAL_METRIC:
+        return None, [], "low"
 
     # ------------------------------------------------------------------ #
     # COMMON_ISSUES                                                       #
@@ -613,10 +681,10 @@ def _answer_menu_list(items: list[dict[str, Any]], is_arabic: bool) -> str:
 
 def _answer_menu_price(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     price = item.get("price")
     if price is None:
@@ -630,10 +698,10 @@ def _answer_menu_price(
 
 def _answer_menu_availability(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     is_avail = bool(item.get("isAvailable", True))
     if is_arabic:
@@ -645,10 +713,10 @@ def _answer_menu_availability(
 
 def _answer_menu_description(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     desc = str(item.get("description", "")).strip()
     if not desc:
@@ -662,10 +730,10 @@ def _answer_menu_description(
 
 def _answer_menu_category(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     cat = str(item.get("category", "")).strip()
     if not cat:
@@ -679,21 +747,39 @@ def _answer_menu_category(
 
 def _answer_faq(
     message: str, faqs: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     q_norm = _normalize_text(message)
+    
+    is_delivery_q = any(p in q_norm for p in [
+        _normalize_text(x) for x in [
+            "delivery hours", "delivery schedule", "delivery times", "deliver hours",
+            "when do you deliver", "what time do you deliver",
+            "مواعيد التوصيل", "ساعات التوصيل", "بتوصل امتى", "التوصيل امتى"
+        ]
+    ])
+    
     best_match: dict[str, Any] | None = None
     best_ratio = 0.0
     for faq in faqs:
-        faq_q_norm = _normalize_text(str(faq.get("question", "")))
+        faq_q = str(faq.get("question", ""))
+        faq_q_norm = _normalize_text(faq_q)
+        
+        faq_is_delivery = any(_normalize_text(x) in faq_q_norm for x in ["delivery hour", "delivery time", "deliver"])
+        if is_delivery_q and faq_is_delivery:
+            best_ratio = 1.0
+            best_match = faq
+            break
+
         ratio = difflib.SequenceMatcher(None, q_norm, faq_q_norm).ratio()
         if ratio > best_ratio:
             best_ratio = ratio
             best_match = faq
+            
     if best_match and best_ratio >= 0.3:  # noqa: PLR2004
         answer = str(best_match.get("answer", "")).strip()
         if answer:
             return answer
-    return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+    return None
 
 
 def _answer_best_sellers(items: list[dict[str, Any]], is_arabic: bool) -> str:

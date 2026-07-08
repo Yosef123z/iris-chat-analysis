@@ -51,6 +51,10 @@ _FORBIDDEN_REPLY_TERMS = {
     "prompt",
     "python",
     "module",
+    "database",
+    "validation layer",
+    "internal tools",
+    "retrieval",
 }
 _ARABIC_CHAR_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u0870-\u089F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]")
 _MOJIBAKE_MARKERS = ("Ø", "Ù", "â", "Ã", "�")
@@ -460,7 +464,10 @@ class ChatService:
         if customer_language == "ar":
             language_instruction = (
                 "The latest customer message contains Arabic text. Reply in natural Egyptian Arabic only, "
-                "like a professional Egyptian customer service employee. Do not use stiff Modern Standard Arabic."
+                "like a professional Egyptian customer service employee. Do not use stiff Modern Standard Arabic. "
+                "Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
+                "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
+                "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
             )
             not_found_language = "natural Egyptian Arabic"
         else:
@@ -505,25 +512,28 @@ class ChatService:
         }
 
         system_prompt = (
-            "You are IRIS, a customer-facing digital employee for the restaurant or cafe in the context. "
+            "You are IRIS, a professional restaurant customer-service assistant. "
+            "Answer the customer using only the provided Business Knowledge Base context. "
+            "The Business Knowledge Base may contain menu items, prices, availability, FAQs, restaurant policies, "
+            "delivery information, offers, branches, working hours, and other restaurant data provided by the backend. "
+            "Do not use general knowledge. "
+            "Do not invent products, prices, offers, policies, availability, working hours, delivery rules, branches, or restaurant facts. "
+            f"If the information is not available in the provided KB context, politely say in {not_found_language} "
+            "that the information is not currently available. "
+            "Never mention internal system details such as backend, API, prompt, system prompt, RAG, embeddings, "
+            "vector search, retrieval, validation layer, JSON contract, database, or implementation details. "
+            "Be friendly, professional, natural, concise, and helpful. "
+            "You are a customer-facing digital employee for the restaurant or cafe in the context. "
             "Sound like a calm, smart, professional human restaurant/cafe customer service agent: helpful, respectful, "
             "situation-aware, and concise. "
-            "Use only the supplied business knowledge context for this business_id. Do not invent facts, prices, "
-            f"policies, products, services, or availability. If information is not present, politely say in {not_found_language} "
-            "that it is not available from the business data. "
-            f"{language_instruction} Be concise, warm, professional, and "
-            "respectful. Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
-            "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
-            "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
+            f"{language_instruction} Be concise, warm, professional, and respectful. "
             "The reply field must contain plain, natural human text only. Do NOT use quotes (\"\") or backslashes around menu item names. "
             "When listing menu items, use a simple inline dash format exactly like this: '- Item: description. - Item: description.' "
             "Do not use code fences, markdown tables, raw JSON, assistant labels, emojis, decorative symbols, repeated punctuation, or strange characters. "
             "Be logically aware that the customer is ordering from a restaurant/cafe context. Do not ask whether "
             "the customer wants delivery, home delivery, or the order delivered to their house unless they explicitly "
             "ask about delivery information. "
-            "Never mention backend, API, contract, JSON, RAG, vector, embeddings, system, prompt, tools, "
-            "or implementation details in the customer-facing reply. Treat menu_items as canonical restaurant/cafe "
-            "menu items. Use canonical item names exactly "
+            "Treat menu_items as canonical restaurant/cafe menu items. Use canonical item names exactly "
             "in order_details.items[].name. Do not translate canonical names. Respect is_available. Do not add or "
             "finalize unavailable or invented items. Suggest available alternatives when possible. Only finalize "
             "When a customer orders items, behave exactly like a real professional waiter or cafe cashier. "
@@ -705,6 +715,10 @@ class ChatService:
         if informational_only and not unavailable_items and not cancel_requested:
             reply = self._sanitize_informational_reply(reply, customer_language)
             reply = self._sanitize_reply_text(reply)
+            
+        if customer_language == "en":
+            reply = ChatService._sanitize_english_apologies(reply)
+            
         reply = self._ensure_natural_reply_direction(reply, customer_language)
         if order_finalized:
             state.awaiting_fulfillment_preference = True
@@ -739,7 +753,12 @@ class ChatService:
 
     @classmethod
     def _has_complaint_cue(cls, message: str) -> bool:
-        return cls._has_any_cue(message, _COMPLAINT_CUES)
+        if cls._has_any_cue(message, _COMPLAINT_CUES):
+            return True
+        normalized = normalize_text(message)
+        if "wrong" in normalized and any(word in normalized for word in {"order", "item", "product", "food"}):
+            return True
+        return False
 
     @classmethod
     def _has_escalation_cue(cls, message: str) -> bool:
@@ -806,7 +825,7 @@ class ChatService:
     @staticmethod
     def _complaint_category(message: str) -> str:
         normalized = normalize_text(message)
-        if any(normalize_text(term) in normalized for term in {"غلط", "wrong order"}):
+        if any(normalize_text(term) in normalized for term in {"غلط", "wrong order"}) or ("wrong" in normalized and any(word in normalized for word in {"order", "item", "product", "food"})):
             return "wrong_order"
         if any(normalize_text(term) in normalized for term in {"ناقص", "missing"}):
             return "missing"
@@ -890,6 +909,16 @@ class ChatService:
                 continue
             kept.append(char)
         return "".join(kept)
+
+    @staticmethod
+    def _sanitize_english_apologies(reply: str) -> str:
+        pattern = re.compile(r"(?i)\b(?:maalish|maalesh|ma'alesh|malesh)\b")
+        sanitized = pattern.sub("Sorry", reply)
+        sanitized = sanitized.replace("معلش", "Sorry")
+        
+        # In case the replacement created double sorry like "Sorry, Sorry",
+        # clean it up nicely, but let's be safe.
+        return sanitized
 
     @staticmethod
     def _ensure_natural_reply_direction(reply: str, customer_language: str) -> str:
