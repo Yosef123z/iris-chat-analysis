@@ -420,3 +420,20 @@ def test_unknown_nested_fields_inside_extended_metric_objects_are_ignored(client
     response = client.post("/api/v1/analysis/report/generate", json=payload)
     assert response.status_code == 200, response.text
 
+
+def test_most_common_ticket_types_accepts_type_alias(client, fake_provider):
+    """mostCommonTicketTypes entries using {"type": "..."} instead of {"name": "..."} must be
+    accepted and the canonical label must appear in the LLM prompt."""
+    payload = report_payload()
+    payload["metrics"]["mostCommonTicketTypes"] = [
+        {"type": "Cold food", "count": 8},
+        {"type": "Late delivery", "count": 5},
+    ]
+
+    response = client.post("/api/v1/analysis/report/generate", json=payload)
+    assert response.status_code == 200, response.text
+
+    text = prompt_text(fake_provider)
+    assert "mostCommonTicketTypes" in text
+    assert "Cold food" in text
+    assert "Late delivery" in text
