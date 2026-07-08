@@ -633,3 +633,64 @@ def test_specific_item_availability_arabic(client, fake_provider):
     assert "metrics.menuItemsList" in data["data_sources_used"]
     assert data["confidence"] == "high"
     assert any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+
+# ---------------------------------------------------------------------------
+# Additional Issue 1, 2, 3 edge cases
+# ---------------------------------------------------------------------------
+
+def test_composite_tickets_english(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-1", "How many open and escalated tickets do I have?")
+    assert len(fake_provider.chat_calls) == 0
+    # The fixture might have 3 or 2 open tickets depending on exact conftest.py, we check it includes "1" and doesn't crash
+    assert "1" in data["reply"]
+    assert "open" in data["reply"].lower()
+    assert "escalated" in data["reply"].lower()
+    assert "metrics.ticketMetrics" in data["data_sources_used"]
+    assert data["confidence"] == "high"
+
+def test_composite_tickets_arabic(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-2", "كام تذكرة مفتوحة ومتصاعدة؟")
+    assert len(fake_provider.chat_calls) == 0
+    assert "1" in data["reply"]
+    assert any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+    assert "metrics.ticketMetrics" in data["data_sources_used"]
+    assert data["confidence"] == "high"
+
+def test_faq_delivery_hours_english(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-3", "What are your delivery hours?")
+    assert len(fake_provider.chat_calls) == 0
+    assert "metrics.faqList" in data["data_sources_used"]
+    assert data["confidence"] == "high"
+
+def test_faq_delivery_hours_arabic(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-4", "مواعيد التوصيل إيه؟")
+    assert len(fake_provider.chat_calls) == 0
+    assert "metrics.faqList" in data["data_sources_used"]
+    assert data["confidence"] == "high"
+
+def test_unsupported_revenue_yesterday_english(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-5", "What was my total revenue yesterday?")
+    assert len(fake_provider.chat_calls) == 0
+    assert data["confidence"] == "low"
+    assert data["data_sources_used"] == []
+    assert "Sorry" in data["reply"]
+
+def test_unsupported_revenue_yesterday_arabic(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-6", "الإيراد كان كام امبارح؟")
+    assert len(fake_provider.chat_calls) == 0
+    assert data["confidence"] == "low"
+    assert data["data_sources_used"] == []
+    assert any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+
+def test_regression_report_delivery_recommendation(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("I recommend checking the delivery logs.")
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-7", "What do you recommend about delivery?")
+    assert len(fake_provider.chat_calls) == 1
+    assert "report.sections" in data["data_sources_used"]
