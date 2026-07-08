@@ -11,6 +11,7 @@ Covers:
 
 import pytest
 
+from app.core.provider import get_owner_report_service
 from app.services.owner_report_service import OwnerReportService
 from tests.conftest import make_sync_payload
 
@@ -152,3 +153,47 @@ def test_sync_via_http_endpoint_stores_report(client):
     payload = make_sync_payload()
     data = do_sync(client, payload)
     assert data["status"] == "ok"
+
+
+def test_sync_accepts_and_stores_metrics(client):
+    """Backend can sync report + metrics; metrics must be stored."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics()
+    data = do_sync(client, payload)
+    assert data == {"status": "ok"}
+
+    svc = client.app.dependency_overrides[get_owner_report_service]()
+    stored = svc.get_report("biz-restaurant-demo")
+    assert stored is not None
+    assert stored.metrics is not None
+    assert stored.metrics["ordersToday"] == 12
+    assert stored.metrics["menuItemsList"][0]["name"] == "Classic Burger"
+
+
+def test_sync_backward_compatible_with_report_only_payload(client):
+    """Old payloads without metrics must still succeed and not crash storage."""
+    payload = make_sync_payload()
+    data = do_sync(client, payload)
+    assert data == {"status": "ok"}
+
+    svc = client.app.dependency_overrides[get_owner_report_service]()
+    stored = svc.get_report("biz-restaurant-demo")
+    assert stored is not None
+    assert stored.metrics is None
+
+
+def test_persisted_metrics_survive_service_restart(tmp_path):
+    """Metrics must be reloaded from persisted owner report artifacts."""
+    from app.models.owner_chat import OwnerReportSyncRequest
+    from tests.conftest import make_sync_payload_with_metrics
+
+    original = OwnerReportService(storage_dir=tmp_path / "owner_reports")
+    original.sync_report(OwnerReportSyncRequest.model_validate(make_sync_payload_with_metrics()))
+
+    restarted = OwnerReportService(storage_dir=tmp_path / "owner_reports")
+    loaded = restarted.load_persisted_reports()
+    assert loaded == 1
+    stored = restarted.get_report("biz-restaurant-demo")
+    assert stored is not None
+    assert stored.metrics["openTicketsCount"] == 3

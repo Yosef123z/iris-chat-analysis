@@ -266,3 +266,85 @@ def make_sync_payload(
             "riskLevel": "medium",
         },
     }
+
+
+def make_sync_payload_with_metrics(
+    business_id: str = "biz-restaurant-demo",
+    business_name: str = "Demo Restaurant",
+    summary: str = "Customer service was mostly neutral with delivery complaints.",
+    **metric_overrides,
+) -> dict:
+    """Return an OwnerReportSyncRequest payload that includes raw backend metrics.
+
+    Default fixture includes:
+    - Classic Burger (available, 120 EGP)
+    - Crispy Chicken Burger (unavailable, 110 EGP)
+    - Lemon Mint (available, 45 EGP, Fresh drink)
+    - Pepsi (unavailable, 25 EGP, 330ml cold drink) — for availability/330ml tests
+    - topOrderedItems: Classic Smash Burger with quantitySold — for best-seller tests
+    """
+    payload = make_sync_payload(business_id, business_name, summary)
+    payload["metrics"] = {
+        "totalSessions": 120,
+        "analyzedSessions": 115,
+        "averageSentimentScore": -0.12,
+        "sentimentDistribution": {"positive": 35, "neutral": 50, "negative": 30},
+        "totalComplaints": 22,
+        "totalHumanAgentRequests": 14,
+        "totalOrdersDetected": 60,
+        "ordersToday": 12,
+        "ordersThisWeek": 45,
+        "ordersInPeriod": 60,
+        "openTicketsCount": 3,
+        "escalatedTicketsCount": 1,
+        "ticketsThisWeek": 5,
+        "recentOpenTickets": [
+            {"subject": "Cold food", "createdAt": "2026-06-28T10:00:00Z"},
+        ],
+        "mostCommonTicketTypes": [
+            {"type": "Cold food", "count": 8},
+            {"type": "Late delivery", "count": 5},
+        ],
+        # topOrderedItems uses quantitySold to exercise the quantity-field fallback path
+        "topOrderedItems": [
+            {"name": "Classic Smash Burger", "quantitySold": 42},
+            {"name": "Lemon Mint", "quantitySold": 30},
+        ],
+        "menuItemsList": [
+            {
+                "name": "Classic Burger",
+                "description": "Beef burger with cheese",
+                "price": 120,
+                "category": "Burgers",
+                "isAvailable": True,
+            },
+            {
+                "name": "Crispy Chicken Burger",
+                "description": "Chicken burger",
+                "price": 110,
+                "category": "Burgers",
+                "isAvailable": False,
+            },
+            {
+                "name": "Lemon Mint",
+                "description": "Fresh drink",
+                "price": 45,
+                "category": "Drinks",
+                "isAvailable": True,
+            },
+            {
+                # 330ml in description must NOT trigger numeric-price fallback
+                "name": "Pepsi",
+                "description": "330ml cold fizzy drink",
+                "price": 25,
+                "category": "Drinks",
+                "isAvailable": False,
+            },
+        ],
+        "faqList": [
+            {"question": "Delivery time", "answer": "Delivery takes 30 to 45 minutes."},
+            {"question": "Working hours", "answer": "We are open from 10 AM to 11 PM."},
+        ],
+    }
+    payload["metrics"].update(metric_overrides)
+    return payload
