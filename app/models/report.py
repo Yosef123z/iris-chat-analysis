@@ -36,7 +36,69 @@ class SentimentDistribution(ContractModel):
     negative: int = Field(..., ge=0)
 
 
+class ReportTicketSummary(ContractModel):
+    subject: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    created_at: str | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
+class ReportNameCount(ContractModel):
+    name: str
+    count: int = Field(..., ge=0)
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
+class ReportTopItem(ContractModel):
+    name: str
+    quantity_sold: int | None = Field(default=None, ge=0)
+    revenue: float | None = Field(default=None, ge=0)
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
+class ReportMenuItem(ContractModel):
+    name: str
+    description: str | None = None
+    price: float | None = Field(default=None, ge=0)
+    category: str | None = None
+    is_available: bool | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
+class ReportFaq(ContractModel):
+    question: str
+    answer: str
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
+
+
 class ReportMetrics(ContractModel):
+    # --- existing required fields (unchanged) ---
     total_sessions: int = Field(..., ge=0)
     analyzed_sessions: int = Field(..., ge=0)
     average_sentiment_score: float = Field(..., ge=-1.0, le=1.0)
@@ -44,6 +106,33 @@ class ReportMetrics(ContractModel):
     total_complaints: int = Field(..., ge=0)
     total_human_agent_requests: int = Field(..., ge=0)
     total_orders_detected: int = Field(..., ge=0)
+
+    # --- new optional extended metrics ---
+    orders_today: int | None = Field(default=None, ge=0)
+    orders_in_period: int | None = Field(default=None, ge=0)
+    orders_this_week: int | None = Field(default=None, ge=0)
+
+    open_tickets_count: int | None = Field(default=None, ge=0)
+    escalated_tickets_count: int | None = Field(default=None, ge=0)
+    tickets_this_week: int | None = Field(default=None, ge=0)
+
+    recent_open_tickets: list[ReportTicketSummary] = Field(default_factory=list)
+    most_common_ticket_types: list[ReportNameCount] = Field(default_factory=list)
+    top_ordered_items: list[ReportTopItem] = Field(default_factory=list)
+
+    menu_items_count: int | None = Field(default=None, ge=0)
+    menu_items_list: list[ReportMenuItem] = Field(default_factory=list)
+
+    faq_count: int | None = Field(default=None, ge=0)
+    faq_list: list[ReportFaq] = Field(default_factory=list)
+
+    # Override to ignore unknown future metric fields without loosening the
+    # top-level contract (ReportGenerationRequest still uses extra="forbid").
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="ignore",
+    )
 
     @model_validator(mode="after")
     def _analyzed_not_more_than_total(self):
