@@ -378,6 +378,30 @@ def _classify_intent(message: str) -> str:
         return INTENT_MENU_LIST
 
     # ------------------------------------------------------------------ #
+    # 7.5 Analytical Guard for FAQ/Orders/Tickets                         #
+    # ------------------------------------------------------------------ #
+    if has(
+        "report", "summary", "summarize", "analyze", "analysis", "insight",
+        "problem", "issue", "complaint", "recommend", "recommendation", "risk",
+        # Arabic
+        "تقرير", "ملخص", "تحليل", "مشكله", "مشاكل", "شكوى", "شكاوى",
+        "توصيه", "توصيات", "خطر", "مخاطر",
+    ):
+        if has("summary", "summarize", "overview", "ملخص", "نظره عامه", "نظرة عامة"):
+            return INTENT_REPORT_SUMMARY
+        if has("highlight", "مميزات", "ابرز"):
+            return INTENT_REPORT_HIGHLIGHTS
+        if has("problem", "issue", "complaint", "مشكله", "مشاكل", "شكوى", "شكاوى"):
+            return INTENT_REPORT_PROBLEMS
+        if has("recommend", "suggestion", "suggest", "recommendation", "توصيه", "توصيات", "اقتراح"):
+            return INTENT_REPORT_RECOMMENDATIONS
+        if has("action", "next step", "خطوه", "خطوات"):
+            return INTENT_REPORT_ACTIONS
+        if has("risk", "خطر", "مخاطر"):
+            return INTENT_REPORT_RISK
+        return INTENT_GENERAL_ANALYTICAL
+
+    # ------------------------------------------------------------------ #
     # 8. FAQ                                                              #
     # ------------------------------------------------------------------ #
     if has(
