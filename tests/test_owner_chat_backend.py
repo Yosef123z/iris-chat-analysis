@@ -178,15 +178,16 @@ def test_business_id_is_echoed_in_response(client, fake_provider):
 
 
 def test_owner_chat_english_message_sends_english_prompt_instruction(client, fake_provider):
-    """Pure-English message → system prompt must say 'reply entirely in English'."""
+    """Pure-English message \u2192 system prompt must say 'reply entirely in English'."""
     sync_report(client, make_sync_payload())
     fake_provider.owner_chat_outputs.append("Sales were up 12% this week.")
 
-    owner_chat(client, "biz-restaurant-demo", "lang-en-1", "What were the top issues this week?")
+    owner_chat(client, "biz-restaurant-demo", "lang-en-1", "Summarize the report.")
 
     all_prompt_text = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
     assert "entirely in English" in all_prompt_text
     assert "DETECTED_LANGUAGE: English" in all_prompt_text
+
 
 
 def test_owner_chat_arabic_message_sends_arabic_prompt_instruction(client, fake_provider):
@@ -696,3 +697,88 @@ def test_owner_chat_hallucinated_menu_item_returns_fallback(client, fake_provide
 
     assert data["confidence"] == "low"
     assert "Pizza Margherita" not in data["reply"]
+
+
+def test_owner_chat_missing_order_metrics_returns_low_confidence(client, fake_provider):
+    """Order-count questions must fall back safely when order metrics are absent."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics(
+        ordersToday=None,
+        ordersThisWeek=None,
+        ordersInPeriod=None,
+        totalOrdersDetected=None,
+    )
+    sync_report(client, payload)
+
+    data = owner_chat(client, "biz-restaurant-demo", "missing-orders-1", "How many orders today?")
+
+    assert data["confidence"] == "low"
+    assert len(fake_provider.chat_calls) == 0
+
+
+def test_owner_chat_missing_ticket_metrics_returns_low_confidence(client, fake_provider):
+    """Ticket questions must fall back safely when ticket metrics are absent."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics(
+        openTicketsCount=None,
+        escalatedTicketsCount=None,
+        ticketsThisWeek=None,
+        recentOpenTickets=None,
+    )
+    sync_report(client, payload)
+
+    data = owner_chat(client, "biz-restaurant-demo", "missing-tickets-1", "How many open tickets?")
+
+    assert data["confidence"] == "low"
+    assert len(fake_provider.chat_calls) == 0
+
+
+def test_owner_chat_common_issues_use_most_common_ticket_types(client, fake_provider):
+    """Common-issue questions may be grounded in metrics.mostCommonTicketTypes."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("The most common issue is cold food.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "common-1", "What is the most common issue?")
+
+    assert "cold food" in data["reply"].lower()
+    assert "metrics.mostCommonTicketTypes" in data["data_sources_used"]
+
+
+def test_owner_chat_common_issues_fall_back_to_report_problems(client, fake_provider):
+    """Common-issue questions may use report.problems when mostCommonTicketTypes is missing."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics(mostCommonTicketTypes=None)
+    payload["report"]["problems"] = [
+        {
+            "title": "Late deliveries",
+            "description": "Orders are arriving late.",
+            "severity": "high",
+            "evidence": ["5 complaints"],
+        }
+    ]
+    sync_report(client, payload)
+    fake_provider.owner_chat_outputs.append("The main issue is late deliveries.")
+
+    data = owner_chat(client, "biz-restaurant-demo", "common-2", "What is the most common issue?")
+
+    assert "late deliveries" in data["reply"].lower()
+    assert len(fake_provider.chat_calls) == 1
+
+
+def test_owner_chat_common_issues_missing_source_returns_low_confidence(client, fake_provider):
+    """Common-issue questions must fall back when neither metric nor report problems exist."""
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload = make_sync_payload_with_metrics(mostCommonTicketTypes=None)
+    payload["report"]["problems"] = []
+    sync_report(client, payload)
+
+    data = owner_chat(client, "biz-restaurant-demo", "common-3", "What is the most common issue?")
+
+    assert data["confidence"] == "low"
+    assert len(fake_provider.chat_calls) == 0
