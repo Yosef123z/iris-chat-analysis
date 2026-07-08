@@ -271,3 +271,152 @@ def test_report_service_calls_structured_output(fake_provider):
     assert result.business_id == "biz-restaurant-demo"
     assert len(fake_provider.structured_calls) == 1
     assert fake_provider.structured_calls[0]["output_model"] is ReportGenerationResponse
+
+
+# ---------------------------------------------------------------------------
+# Tests for extended-metrics compatibility fix
+# ---------------------------------------------------------------------------
+
+def _extended_metrics_payload():
+    """report_payload() base augmented with all new extended metric fields."""
+    payload = report_payload()
+    payload["metrics"].update(
+        {
+            "ordersToday": 3,
+            "ordersThisWeek": 12,
+            "ordersInPeriod": 47,
+            "openTicketsCount": 2,
+            "escalatedTicketsCount": 1,
+            "ticketsThisWeek": 5,
+            "recentOpenTickets": [
+                {
+                    "subject": "Urgent issue with order",
+                    "status": "open",
+                    "priority": "high",
+                    "createdAt": "2026-07-07T12:00:00Z",
+                    "extraBackendField": "ignored",
+                }
+            ],
+            "mostCommonTicketTypes": [
+                {"name": "LateDelivery", "count": 4},
+                {"name": "FoodQuality", "count": 3},
+            ],
+            "topOrderedItems": [
+                {
+                    "name": "Classic Smash Burger",
+                    "quantitySold": 20,
+                    "revenue": 2400,
+                    "extraBackendField": "ignored",
+                }
+            ],
+            "menuItemsCount": 4,
+            "menuItemsList": [
+                {
+                    "name": "Classic Smash Burger",
+                    "description": "Beef patty with cheddar and special sauce",
+                    "price": 120,
+                    "category": "Burgers",
+                    "isAvailable": True,
+                    "extraBackendField": "ignored",
+                },
+                {
+                    "name": "Pepsi",
+                    "description": "Carbonated soft drink, 330ml",
+                    "price": 20,
+                    "category": "Drinks",
+                    "isAvailable": False,
+                },
+            ],
+            "faqCount": 1,
+            "faqList": [
+                {
+                    "question": "What are your delivery hours?",
+                    "answer": "We deliver daily from 11 AM to midnight.",
+                    "extraBackendField": "ignored",
+                }
+            ],
+            "unknownFutureMetric": "ignored",
+        }
+    )
+    return payload
+
+
+def test_extended_metrics_accepted_returns_200(client, fake_provider):
+    """Test 1: extended metric fields are accepted and appear in the LLM prompt."""
+    payload = _extended_metrics_payload()
+    response = client.post("/api/v1/analysis/report/generate", json=payload)
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["businessId"] == payload["businessId"]
+
+    # Extended metric data must flow into the prompt context
+    text = prompt_text(fake_provider)
+    for expected in [
+        "ordersToday",
+        "menuItemsList",
+        "Classic Smash Burger",
+        "faqList",
+        "What are your delivery hours?",
+    ]:
+        assert expected in text, f"Expected '{expected}' to appear in LLM prompt"
+
+    # unknownFutureMetric must not cause a failure (already asserted via 200)
+
+
+def test_old_report_payload_without_extended_metrics_still_works(client, fake_provider):
+    """Test 2: the original (R1/R2-style) payload without any extended fields still works."""
+    response = client.post("/api/v1/analysis/report/generate", json=report_payload())
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["businessId"] == "biz-restaurant-demo"
+
+
+def test_analyzed_sessions_greater_than_total_sessions_returns_422(client):
+    """Test 3: analyzedSessions > totalSessions must still fail validation."""
+    payload = report_payload()
+    payload["metrics"]["totalSessions"] = 5
+    payload["metrics"]["analyzedSessions"] = 10
+
+    response = client.post("/api/v1/analysis/report/generate", json=payload)
+    assert response.status_code == 422
+
+    errors = response.json()["detail"]
+    messages = " ".join(str(e) for e in errors)
+    assert "analyzedSessions" in messages or "totalSessions" in messages
+
+
+def test_top_level_unknown_field_returns_422(client):
+    """Test 4: the top-level contract is still strict; unknown root fields must be rejected."""
+    payload = report_payload()
+    payload["unexpectedRootField"] = "should fail"
+
+    response = client.post("/api/v1/analysis/report/generate", json=payload)
+    assert response.status_code == 422
+
+
+def test_unknown_nested_fields_inside_extended_metric_objects_are_ignored(client, fake_provider):
+    """Test 5: extra fields inside nested metric objects (e.g. extraBackendField) are silently dropped."""
+    payload = report_payload()
+    payload["metrics"]["menuItemsList"] = [
+        {
+            "name": "Classic Smash Burger",
+            "description": "Beef patty",
+            "price": 120,
+            "category": "Burgers",
+            "isAvailable": True,
+            "extraBackendField": "ignored",
+        }
+    ]
+    payload["metrics"]["faqList"] = [
+        {
+            "question": "What are your delivery hours?",
+            "answer": "11 AM to midnight.",
+            "extraBackendField": "ignored",
+        }
+    ]
+
+    response = client.post("/api/v1/analysis/report/generate", json=payload)
+    assert response.status_code == 200, response.text
+
