@@ -313,11 +313,19 @@ STRICT RULES:
         metrics = stored.metrics
 
         # For factual categories that require raw metrics, fall back safely if the
-        # metric source is absent. Report-only payloads remain usable for report-style
-        # questions (summaries, problems, recommendations, risk).
-        factual_metric_categories = {"menu", "faq", "best_sellers"}
+        # required source is absent. Report-only payloads remain usable for report-style
+        # questions (summaries, problems, recommendations, risk), and common-issue
+        # questions may fall back to report.problems when metrics are missing.
+        factual_metric_categories = {"menu", "faq", "best_sellers", "orders", "tickets", "common_issues"}
         for category in categories & factual_metric_categories:
-            if not self._metrics_contain(metrics, self._required_metric_keys(category)):
+            if category == "common_issues":
+                has_source = (
+                    self._metrics_contain(metrics, ["mostCommonTicketTypes"])
+                    or bool(stored.report.problems)
+                )
+            else:
+                has_source = self._metrics_contain(metrics, self._required_metric_keys(category))
+            if not has_source:
                 fallback = self._safe_missing_reply(is_arabic)
                 return OwnerChatResponse(
                     business_id=request.business_id,
