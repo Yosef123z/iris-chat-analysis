@@ -7,8 +7,10 @@
 ==============================================================
 """
 
-from pydantic import BaseModel, Field, ConfigDict, model_validator
-from typing import List, Optional
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 
 from app.models.report import ReportGenerationResponse, ReportPeriod
 
@@ -100,6 +102,10 @@ class OwnerReportSyncRequest(BaseModel):
     business_name: str = Field(..., min_length=1)
     period: ReportPeriod
     report: ReportGenerationResponse
+    metrics: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional raw backend metrics that ground factual owner questions.",
+    )
 
     @model_validator(mode="after")
     def _report_matches_owner_scope(self):
@@ -133,8 +139,25 @@ class OwnerReportSyncRequest(BaseModel):
                 "suggestedActions": ["Review delivery process this week."],
                 "riskLevel": "medium",
             },
+            "metrics": {
+                "menuItemsList": [
+                    {
+                        "name": "Classic Burger",
+                        "description": "Beef burger with cheese",
+                        "price": 120,
+                        "category": "Burgers",
+                        "isAvailable": True,
+                    }
+                ],
+                "faqList": [
+                    {"question": "Delivery time", "answer": "30 to 45 minutes."}
+                ],
+                "ordersToday": 12,
+                "openTicketsCount": 2,
+            },
         }
     })
+
 
 
 class OwnerReportSyncResponse(BaseModel):
