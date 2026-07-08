@@ -694,3 +694,17 @@ def test_regression_report_delivery_recommendation(client, fake_provider):
     data = owner_chat(client, "biz-restaurant-demo", "det-new-7", "What do you recommend about delivery?")
     assert len(fake_provider.chat_calls) == 1
     assert "report.sections" in data["data_sources_used"]
+
+def test_analytical_guard_report_delivery_hours(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("The report says delivery hours are working well.")
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-8", "What does the report say about delivery hours?")
+    assert len(fake_provider.chat_calls) == 1
+    assert "report.sections" in data["data_sources_used"]
+
+def test_analytical_guard_analyze_complaints(client, fake_provider):
+    sync_report(client, make_sync_payload_with_metrics())
+    fake_provider.owner_chat_outputs.append("Customers complained about late delivery hours.")
+    data = owner_chat(client, "biz-restaurant-demo", "det-new-9", "Analyze delivery hours complaints.")
+    assert len(fake_provider.chat_calls) == 1
+    assert "report.sections" in data["data_sources_used"]
