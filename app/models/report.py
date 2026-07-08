@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 
+
 SeverityLevel = Literal["low", "medium", "high", "critical"]
 
 
@@ -50,7 +51,7 @@ class ReportTicketSummary(ContractModel):
 
 
 class ReportNameCount(ContractModel):
-    name: str
+    name: str = Field(..., min_length=1)
     count: int = Field(..., ge=0)
 
     model_config = ConfigDict(
@@ -58,6 +59,15 @@ class ReportNameCount(ContractModel):
         populate_by_name=True,
         extra="ignore",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_type_as_name(cls, value):
+        """Accept {"type": "..."} as an alias for {"name": "..."} so that
+        backend payloads using either key are normalised before validation."""
+        if isinstance(value, dict) and "name" not in value and "type" in value:
+            value = {**value, "name": value["type"]}
+        return value
 
 
 class ReportTopItem(ContractModel):
