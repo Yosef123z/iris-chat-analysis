@@ -55,7 +55,7 @@ class ReportGenerationService:
 
     @staticmethod
     def _build_messages(payload: ReportGenerationRequest) -> list[dict[str, str]]:
-        aggregate_context = payload.model_dump(mode="json", by_alias=True)
+        aggregate_context = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
         schema = {
             "businessId": payload.business_id,
             "period": aggregate_context["period"],
