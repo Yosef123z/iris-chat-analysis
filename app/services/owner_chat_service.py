@@ -68,10 +68,12 @@ INTENT_ORDERS_IN_PERIOD = "ORDERS_IN_PERIOD"
 INTENT_ORDERS_TOTAL_DETECTED = "ORDERS_TOTAL_DETECTED"
 INTENT_TICKETS_OPEN = "TICKETS_OPEN"
 INTENT_TICKETS_ESCALATED = "TICKETS_ESCALATED"
+INTENT_TICKETS_OPEN_AND_ESCALATED = "TICKETS_OPEN_AND_ESCALATED"
 INTENT_TICKETS_THIS_WEEK = "TICKETS_THIS_WEEK"
 INTENT_RECENT_OPEN_TICKETS = "RECENT_OPEN_TICKETS"
 INTENT_BEST_SELLERS = "BEST_SELLERS"
 INTENT_COMMON_ISSUES = "COMMON_ISSUES"
+INTENT_UNSUPPORTED_FACTUAL_METRIC = "UNSUPPORTED_FACTUAL_METRIC"
 
 _FACTUAL_INTENTS = {
     INTENT_MENU_LIST, INTENT_MENU_PRICE, INTENT_MENU_AVAILABILITY,
@@ -79,9 +81,9 @@ _FACTUAL_INTENTS = {
     INTENT_FAQ_LIST, INTENT_FAQ_ANSWER,
     INTENT_ORDERS_TODAY, INTENT_ORDERS_THIS_WEEK,
     INTENT_ORDERS_IN_PERIOD, INTENT_ORDERS_TOTAL_DETECTED,
-    INTENT_TICKETS_OPEN, INTENT_TICKETS_ESCALATED,
+    INTENT_TICKETS_OPEN, INTENT_TICKETS_ESCALATED, INTENT_TICKETS_OPEN_AND_ESCALATED,
     INTENT_TICKETS_THIS_WEEK, INTENT_RECENT_OPEN_TICKETS,
-    INTENT_BEST_SELLERS, INTENT_COMMON_ISSUES,
+    INTENT_BEST_SELLERS, INTENT_COMMON_ISSUES, INTENT_UNSUPPORTED_FACTUAL_METRIC,
 }
 
 # Report / LLM intents
@@ -253,6 +255,16 @@ def _classify_intent(message: str) -> str:
         return INTENT_BEST_SELLERS
 
     # ------------------------------------------------------------------ #
+    # 1.5 UNSUPPORTED FACTUAL METRIC                                      #
+    # ------------------------------------------------------------------ #
+    if has(
+        "revenue yesterday", "sales yesterday", "profit yesterday",
+        "total revenue yesterday", "income yesterday",
+        "صافي الربح امبارح", "الايراد امبارح", "المبيعات امبارح", "الدخل امبارح"
+    ):
+        return INTENT_UNSUPPORTED_FACTUAL_METRIC
+
+    # ------------------------------------------------------------------ #
     # 2. COMMON_ISSUES — most common / frequent / top problem             #
     # Check BEFORE tickets so 'most common complaint/shikawa' routes here #
     # ------------------------------------------------------------------ #
@@ -372,9 +384,12 @@ def _classify_intent(message: str) -> str:
         "faq", "frequently asked", "common question",
         "working hours", "opening hours", "delivery time", "return policy",
         "refund", "policy",
+        "delivery hours", "delivery schedule", "delivery times", "deliver hours",
+        "when do you deliver", "what time do you deliver",
         # Arabic
         "سؤال", "اسئلة", "سياسة", "مواعيد", "ساعات",
         "استرجاع", "استرداد",
+        "مواعيد التوصيل", "ساعات التوصيل", "بتوصل امتى", "التوصيل امتى",
     ):
         # If there seems to be a specific question query, use FAQ_ANSWER
         return INTENT_FAQ_ANSWER if len(message.strip()) > 20 else INTENT_FAQ_LIST  # noqa: PLR2004
@@ -401,7 +416,11 @@ def _classify_intent(message: str) -> str:
     # 10. Tickets — sub-intents                                           #
     # ------------------------------------------------------------------ #
     if is_ticket:
-        if has("escalat", "مرفوع", "متصاعد"):
+        has_escalated = has("escalat", "مرفوع", "متصاعد")
+        has_open = has("open", "مفتوح")
+        if has_escalated and has_open:
+            return INTENT_TICKETS_OPEN_AND_ESCALATED
+        if has_escalated:
             return INTENT_TICKETS_ESCALATED
         if has("this week", "الاسبوع"):
             return INTENT_TICKETS_THIS_WEEK
@@ -553,6 +572,15 @@ def _build_deterministic_answer(
             return f"عدد التذاكر المتصاعدة {val}.", [_DS_TICKETS], "high"
         return f"There are {val} escalated ticket(s).", [_DS_TICKETS], "high"
 
+    if intent == INTENT_TICKETS_OPEN_AND_ESCALATED:
+        open_val = metrics.get("openTicketsCount")
+        esc_val = metrics.get("escalatedTicketsCount")
+        if open_val is None or esc_val is None:
+            return None, [], "low"
+        if is_arabic:
+            return f"عندك {open_val} تذكرة مفتوحة و{esc_val} تذكرة متصاعدة.", [_DS_TICKETS], "high"
+        return f"You currently have {open_val} open ticket(s) and {esc_val} escalated ticket(s).", [_DS_TICKETS], "high"
+
     if intent == INTENT_TICKETS_THIS_WEEK:
         val = metrics.get("ticketsThisWeek")
         if val is None:
@@ -580,6 +608,12 @@ def _build_deterministic_answer(
         if not top_items:
             return None, [], "low"
         return _answer_best_sellers(top_items, is_arabic), [_DS_TOP_ITEMS], "high"
+
+    # ------------------------------------------------------------------ #
+    # UNSUPPORTED FACTUAL METRIC                                          #
+    # ------------------------------------------------------------------ #
+    if intent == INTENT_UNSUPPORTED_FACTUAL_METRIC:
+        return None, [], "low"
 
     # ------------------------------------------------------------------ #
     # COMMON_ISSUES                                                       #
@@ -691,14 +725,32 @@ def _answer_faq(
     message: str, faqs: list[dict[str, Any]], is_arabic: bool
 ) -> Optional[str]:
     q_norm = _normalize_text(message)
+    
+    is_delivery_q = any(p in q_norm for p in [
+        _normalize_text(x) for x in [
+            "delivery hours", "delivery schedule", "delivery times", "deliver hours",
+            "when do you deliver", "what time do you deliver",
+            "مواعيد التوصيل", "ساعات التوصيل", "بتوصل امتى", "التوصيل امتى"
+        ]
+    ])
+    
     best_match: dict[str, Any] | None = None
     best_ratio = 0.0
     for faq in faqs:
-        faq_q_norm = _normalize_text(str(faq.get("question", "")))
+        faq_q = str(faq.get("question", ""))
+        faq_q_norm = _normalize_text(faq_q)
+        
+        faq_is_delivery = any(_normalize_text(x) in faq_q_norm for x in ["delivery hour", "delivery time", "deliver"])
+        if is_delivery_q and faq_is_delivery:
+            best_ratio = 1.0
+            best_match = faq
+            break
+
         ratio = difflib.SequenceMatcher(None, q_norm, faq_q_norm).ratio()
         if ratio > best_ratio:
             best_ratio = ratio
             best_match = faq
+            
     if best_match and best_ratio >= 0.3:  # noqa: PLR2004
         answer = str(best_match.get("answer", "")).strip()
         if answer:
