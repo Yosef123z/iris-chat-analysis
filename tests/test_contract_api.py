@@ -759,6 +759,11 @@ def test_english_unavailable_item_reply_stays_english(client, fake_provider):
     assert data["order_details"]["total_amount"] == 0
     assert data["reply"].startswith("Sorry, Crispy Chicken Burger is not available right now.")
     assert contains_arabic(data["reply"]) is False
+    lower_reply = data["reply"].lower()
+    assert "maalish" not in lower_reply
+    assert "maalesh" not in lower_reply
+    assert "malesh" not in lower_reply
+    assert "معلش" not in data["reply"]
 
 
 def test_customer_replies_are_egyptian_arabic_sanitized(client, fake_provider):
