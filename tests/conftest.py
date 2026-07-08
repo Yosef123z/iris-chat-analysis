@@ -274,7 +274,15 @@ def make_sync_payload_with_metrics(
     summary: str = "Customer service was mostly neutral with delivery complaints.",
     **metric_overrides,
 ) -> dict:
-    """Return an OwnerReportSyncRequest payload that includes raw backend metrics."""
+    """Return an OwnerReportSyncRequest payload that includes raw backend metrics.
+
+    Default fixture includes:
+    - Classic Burger (available, 120 EGP)
+    - Crispy Chicken Burger (unavailable, 110 EGP)
+    - Lemon Mint (available, 45 EGP, Fresh drink)
+    - Pepsi (unavailable, 25 EGP, 330ml cold drink) — for availability/330ml tests
+    - topOrderedItems: Classic Smash Burger with quantitySold — for best-seller tests
+    """
     payload = make_sync_payload(business_id, business_name, summary)
     payload["metrics"] = {
         "totalSessions": 120,
@@ -297,9 +305,10 @@ def make_sync_payload_with_metrics(
             {"type": "Cold food", "count": 8},
             {"type": "Late delivery", "count": 5},
         ],
+        # topOrderedItems uses quantitySold to exercise the quantity-field fallback path
         "topOrderedItems": [
-            {"name": "Classic Burger", "count": 25},
-            {"name": "Lemon Mint", "count": 18},
+            {"name": "Classic Smash Burger", "quantitySold": 42},
+            {"name": "Lemon Mint", "quantitySold": 30},
         ],
         "menuItemsList": [
             {
@@ -322,6 +331,14 @@ def make_sync_payload_with_metrics(
                 "price": 45,
                 "category": "Drinks",
                 "isAvailable": True,
+            },
+            {
+                # 330ml in description must NOT trigger numeric-price fallback
+                "name": "Pepsi",
+                "description": "330ml cold fizzy drink",
+                "price": 25,
+                "category": "Drinks",
+                "isAvailable": False,
             },
         ],
         "faqList": [

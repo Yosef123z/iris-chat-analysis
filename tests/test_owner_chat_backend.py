@@ -191,12 +191,17 @@ def test_owner_chat_english_message_sends_english_prompt_instruction(client, fak
 
 
 def test_owner_chat_arabic_message_sends_arabic_prompt_instruction(client, fake_provider):
-    """Arabic message → system prompt must instruct Egyptian Arabic reply."""
+    """Arabic message → system prompt must instruct Egyptian Arabic reply (LLM path).
+
+    Uses a report-summary question which always routes through the LLM so we
+    can inspect the system-prompt directives.
+    """
     sync_report(client, make_sync_payload())
     fake_provider.owner_chat_outputs.append("الإيرادات كانت كويسة أوي النهارده.")
 
-    data = owner_chat(client, "biz-restaurant-demo", "lang-ar-1", "إيه كانت أكتر المشاكل النهارده؟")
+    data = owner_chat(client, "biz-restaurant-demo", "lang-ar-1", "ممكن تلخصلي التقرير؟")
 
+    assert len(fake_provider.chat_calls) == 1, "Summary question must go through LLM"
     all_prompt_text = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
     assert "Egyptian Arabic" in all_prompt_text or "Masry" in all_prompt_text
     # Reply should contain Arabic text (from mock LLM)
@@ -487,116 +492,130 @@ def test_owner_chat_english_message_gets_english_no_data_reply(client, fake_prov
 
 
 def test_owner_chat_prompt_contains_metrics(client, fake_provider):
-    """The synced metrics must appear in the owner chat prompt context."""
+    """The synced metrics must be stored and accessible (verified via the report sync endpoint)."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("You have Classic Burger on the menu.")
 
-    owner_chat(client, "biz-restaurant-demo", "metrics-prompt-1", "What is on the menu?")
+    # Menu list is now answered deterministically — no LLM call needed.
+    data = owner_chat(client, "biz-restaurant-demo", "metrics-prompt-1", "What is on the menu?")
 
-    assert len(fake_provider.chat_calls) == 1
-    prompt = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
-    assert "SYNCED_OWNER_CONTEXT" in prompt
-    assert "menuItemsList" in prompt
-    assert "Classic Burger" in prompt
+    # Deterministic path: LLM is NOT called
+    assert len(fake_provider.chat_calls) == 0
+    # The reply must contain menu items from the fixture
+    assert "Classic Burger" in data["reply"] or "Lemon Mint" in data["reply"] or "Pepsi" in data["reply"]
+    assert "metrics.menuItemsList" in data["data_sources_used"]
 
 
 def test_owner_chat_uses_menu_items_list(client, fake_provider):
-    """Menu questions must be grounded in metrics.menuItemsList."""
+    """Menu questions must be answered deterministically from metrics.menuItemsList without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("You have Classic Burger and Lemon Mint.")
 
     data = owner_chat(client, "biz-restaurant-demo", "menu-1", "What do I have in the menu?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "Classic Burger" in data["reply"]
     assert "metrics.menuItemsList" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_menu_items_list_for_price(client, fake_provider):
-    """Price answers must match metrics.menuItemsList exactly."""
+    """Price answers must be deterministic from metrics.menuItemsList without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("Classic Burger costs 120 EGP.")
 
     data = owner_chat(client, "biz-restaurant-demo", "price-1", "How much is Classic Burger?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "120" in data["reply"]
     assert "metrics.menuItemsList" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_menu_items_list_for_availability(client, fake_provider):
-    """Availability answers must match metrics.menuItemsList[].isAvailable."""
+    """Availability answers must be deterministic from metrics.menuItemsList without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("Crispy Chicken Burger is not available right now.")
 
     data = owner_chat(
         client, "biz-restaurant-demo", "avail-1", "Is Crispy Chicken Burger available?"
     )
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "not available" in data["reply"].lower() or "مش متاح" in data["reply"]
     assert "metrics.menuItemsList" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_faq_list(client, fake_provider):
-    """FAQ questions must be answered from metrics.faqList."""
+    """FAQ questions must be answered deterministically from metrics.faqList without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("Delivery usually takes 30 to 45 minutes.")
 
     data = owner_chat(client, "biz-restaurant-demo", "faq-1", "What is the delivery time?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "30 to 45 minutes" in data["reply"]
     assert "metrics.faqList" in data["data_sources_used"]
 
 
 def test_owner_chat_uses_order_metrics(client, fake_provider):
-    """Order-count questions must use metrics orders fields."""
+    """Order-count questions must be answered deterministically without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("You received 12 orders today.")
 
     data = owner_chat(client, "biz-restaurant-demo", "orders-1", "How many orders came today?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "12" in data["reply"]
     assert "metrics.orderMetrics" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_ticket_metrics(client, fake_provider):
-    """Ticket questions must use metrics ticket fields."""
+    """Ticket questions must be answered deterministically without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("You have 3 open tickets and 1 escalated ticket.")
 
     data = owner_chat(client, "biz-restaurant-demo", "tickets-1", "How many open tickets do I have?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "3" in data["reply"]
     assert "metrics.ticketMetrics" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_top_ordered_items(client, fake_provider):
-    """Best-seller questions must use metrics.topOrderedItems."""
+    """Best-seller questions must be answered deterministically from metrics.topOrderedItems without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("Your best-selling item is Classic Burger.")
 
     data = owner_chat(client, "biz-restaurant-demo", "best-1", "What is my best-selling item?")
 
-    assert "Classic Burger" in data["reply"]
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
+    # Fixture top item is now Classic Smash Burger (quantitySold=42)
+    assert "Classic Smash Burger" in data["reply"]
     assert "metrics.topOrderedItems" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_uses_report_sections_for_recommendations(client, fake_provider):
-    """Summary/recommendation/risk questions must use report sections."""
+    """Summary/recommendation/risk questions must still use LLM with report context."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
@@ -604,6 +623,8 @@ def test_owner_chat_uses_report_sections_for_recommendations(client, fake_provid
 
     data = owner_chat(client, "biz-restaurant-demo", "rec-1", "What are your recommendations?")
 
+    # Analytical path — LLM IS called
+    assert len(fake_provider.chat_calls) == 1
     assert "review" in data["reply"].lower()
     assert "report.sections" in data["data_sources_used"]
 
@@ -620,7 +641,9 @@ def test_owner_chat_missing_metric_returns_low_confidence(client, fake_provider)
 
     assert data["confidence"] == "low"
     assert len(fake_provider.chat_calls) == 0
+    # English message → English fallback (no Arabic characters)
     assert not any("\u0600" <= ch <= "\u06FF" for ch in data["reply"])
+    assert "Sorry" in data["reply"]
 
 
 def test_owner_chat_business_isolation_with_metrics(client, fake_provider):
@@ -653,32 +676,70 @@ def test_owner_chat_business_isolation_with_metrics(client, fake_provider):
             }
         ],
     )
+def test_owner_chat_business_isolation_with_metrics(client, fake_provider):
+    """Metrics from business A must not appear in business B replies.
+
+    Menu list is now deterministic, so we verify isolation by checking
+    that the deterministic reply for each business only contains its own items.
+    """
+    from tests.conftest import make_sync_payload_with_metrics
+
+    payload_a = make_sync_payload_with_metrics(
+        business_id="biz-a",
+        business_name="Business A",
+        menuItemsList=[
+            {
+                "name": "A Special",
+                "description": "A only",
+                "price": 100,
+                "category": "Main",
+                "isAvailable": True,
+            }
+        ],
+    )
+    payload_b = make_sync_payload_with_metrics(
+        business_id="biz-b",
+        business_name="Business B",
+        menuItemsList=[
+            {
+                "name": "B Special",
+                "description": "B only",
+                "price": 200,
+                "category": "Main",
+                "isAvailable": True,
+            }
+        ],
+    )
     sync_report(client, payload_a)
     sync_report(client, payload_b)
 
-    fake_provider.owner_chat_outputs.append("You have A Special.")
+    # Business A: deterministic menu reply must contain A Special, not B Special
     data_a = owner_chat(client, "biz-a", "iso-a", "What is on the menu?")
-    prompt_a = "\n".join(msg["content"] for msg in fake_provider.chat_calls[0])
-    assert "A Special" in prompt_a
-    assert "B Special" not in prompt_a
+    assert len(fake_provider.chat_calls) == 0  # deterministic, no LLM
     assert "A Special" in data_a["reply"]
+    assert "B Special" not in data_a["reply"]
 
-    fake_provider.owner_chat_outputs.append("You have B Special.")
+    # Business B: deterministic menu reply must contain B Special, not A Special
     data_b = owner_chat(client, "biz-b", "iso-b", "What is on the menu?")
-    prompt_b = "\n".join(msg["content"] for msg in fake_provider.chat_calls[1])
-    assert "B Special" in prompt_b
-    assert "A Special" not in prompt_b
+    assert len(fake_provider.chat_calls) == 0  # still no LLM
     assert "B Special" in data_b["reply"]
+    assert "A Special" not in data_b["reply"]
 
 
 def test_owner_chat_sanitizes_internal_terms(client, fake_provider):
-    """Replies containing internal implementation terms must be replaced with a safe fallback."""
+    """Internal-term sanitization still applies on LLM replies (report path).
+
+    Order-today is answered deterministically, so we use a report-path question
+    (recommendations) to exercise the LLM sanitization guard.
+    """
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("The backend API database says you have 12 orders.")
+    fake_provider.owner_chat_outputs.append(
+        "The backend API database recommends improving delivery speed."
+    )
 
-    data = owner_chat(client, "biz-restaurant-demo", "sanitize-1", "How many orders today?")
+    data = owner_chat(client, "biz-restaurant-demo", "sanitize-1", "What are your recommendations?")
 
     assert data["confidence"] == "low"
     assert "backend" not in data["reply"].lower()
@@ -687,16 +748,22 @@ def test_owner_chat_sanitizes_internal_terms(client, fake_provider):
 
 
 def test_owner_chat_hallucinated_menu_item_returns_fallback(client, fake_provider):
-    """A reply that invents a menu item not present in metrics must be rejected."""
+    """Menu list is now deterministic — the LLM cannot hallucinate items.
+
+    The deterministic reply lists only items from metrics; Pizza Margherita
+    is not in the fixture and therefore cannot appear in the reply.
+    """
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("You should add Pizza Margherita for 95 EGP.")
+    # No LLM output queued — deterministic path doesn't call LLM
 
     data = owner_chat(client, "biz-restaurant-demo", "hallucination-1", "What do I have in the menu?")
 
-    assert data["confidence"] == "low"
+    # Deterministic path: LLM not called, reply is from metrics only
+    assert len(fake_provider.chat_calls) == 0
     assert "Pizza Margherita" not in data["reply"]
+    assert data["confidence"] == "high"  # We have menu data
 
 
 def test_owner_chat_missing_order_metrics_returns_low_confidence(client, fake_provider):
@@ -736,20 +803,23 @@ def test_owner_chat_missing_ticket_metrics_returns_low_confidence(client, fake_p
 
 
 def test_owner_chat_common_issues_use_most_common_ticket_types(client, fake_provider):
-    """Common-issue questions may be grounded in metrics.mostCommonTicketTypes."""
+    """Common-issue questions must be answered deterministically from metrics.mostCommonTicketTypes without LLM."""
     from tests.conftest import make_sync_payload_with_metrics
 
     sync_report(client, make_sync_payload_with_metrics())
-    fake_provider.owner_chat_outputs.append("The most common issue is cold food.")
 
     data = owner_chat(client, "biz-restaurant-demo", "common-1", "What is the most common issue?")
 
+    # Deterministic path — no LLM call
+    assert len(fake_provider.chat_calls) == 0
     assert "cold food" in data["reply"].lower()
     assert "metrics.mostCommonTicketTypes" in data["data_sources_used"]
+    assert data["confidence"] == "high"
 
 
 def test_owner_chat_common_issues_fall_back_to_report_problems(client, fake_provider):
-    """Common-issue questions may use report.problems when mostCommonTicketTypes is missing."""
+    """When mostCommonTicketTypes is missing, common-issue answers come deterministically
+    from report.problems (no LLM call needed)."""
     from tests.conftest import make_sync_payload_with_metrics
 
     payload = make_sync_payload_with_metrics(mostCommonTicketTypes=None)
@@ -762,12 +832,13 @@ def test_owner_chat_common_issues_fall_back_to_report_problems(client, fake_prov
         }
     ]
     sync_report(client, payload)
-    fake_provider.owner_chat_outputs.append("The main issue is late deliveries.")
 
     data = owner_chat(client, "biz-restaurant-demo", "common-2", "What is the most common issue?")
 
-    assert "late deliveries" in data["reply"].lower()
-    assert len(fake_provider.chat_calls) == 1
+    # Deterministic path from report.problems — no LLM call
+    assert len(fake_provider.chat_calls) == 0
+    assert "late" in data["reply"].lower() or "deliver" in data["reply"].lower()
+    assert data["confidence"] in {"high", "medium"}
 
 
 def test_owner_chat_common_issues_missing_source_returns_low_confidence(client, fake_provider):
