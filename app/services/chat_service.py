@@ -464,7 +464,10 @@ class ChatService:
         if customer_language == "ar":
             language_instruction = (
                 "The latest customer message contains Arabic text. Reply in natural Egyptian Arabic only, "
-                "like a professional Egyptian customer service employee. Do not use stiff Modern Standard Arabic."
+                "like a professional Egyptian customer service employee. Do not use stiff Modern Standard Arabic. "
+                "Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
+                "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
+                "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
             )
             not_found_language = "natural Egyptian Arabic"
         else:
@@ -523,10 +526,7 @@ class ChatService:
             "You are a customer-facing digital employee for the restaurant or cafe in the context. "
             "Sound like a calm, smart, professional human restaurant/cafe customer service agent: helpful, respectful, "
             "situation-aware, and concise. "
-            f"{language_instruction} Be concise, warm, professional, and "
-            "respectful. Do not use Modern Standard Arabic phrases like 'هل ترغب', 'عذرًا', 'غير متوفر حاليًا', "
-            "'تم إضافة', 'يريد', 'تقديم شكوى', 'استفسار', or 'شيء آخر'. Prefer natural Egyptian phrasing like "
-            "'تحب', 'معلش', 'مش متاح دلوقتي', 'ضفت', 'عايز', 'هسجل المشكلة', 'سؤال', and 'حاجة تانية'. "
+            f"{language_instruction} Be concise, warm, professional, and respectful. "
             "The reply field must contain plain, natural human text only. Do NOT use quotes (\"\") or backslashes around menu item names. "
             "When listing menu items, use a simple inline dash format exactly like this: '- Item: description. - Item: description.' "
             "Do not use code fences, markdown tables, raw JSON, assistant labels, emojis, decorative symbols, repeated punctuation, or strange characters. "
@@ -715,6 +715,10 @@ class ChatService:
         if informational_only and not unavailable_items and not cancel_requested:
             reply = self._sanitize_informational_reply(reply, customer_language)
             reply = self._sanitize_reply_text(reply)
+            
+        if customer_language == "en":
+            reply = ChatService._sanitize_english_apologies(reply)
+            
         reply = self._ensure_natural_reply_direction(reply, customer_language)
         if order_finalized:
             state.awaiting_fulfillment_preference = True
@@ -749,7 +753,12 @@ class ChatService:
 
     @classmethod
     def _has_complaint_cue(cls, message: str) -> bool:
-        return cls._has_any_cue(message, _COMPLAINT_CUES)
+        if cls._has_any_cue(message, _COMPLAINT_CUES):
+            return True
+        normalized = normalize_text(message)
+        if "wrong" in normalized and any(word in normalized for word in {"order", "item", "product", "food"}):
+            return True
+        return False
 
     @classmethod
     def _has_escalation_cue(cls, message: str) -> bool:
@@ -816,7 +825,7 @@ class ChatService:
     @staticmethod
     def _complaint_category(message: str) -> str:
         normalized = normalize_text(message)
-        if any(normalize_text(term) in normalized for term in {"غلط", "wrong order"}):
+        if any(normalize_text(term) in normalized for term in {"غلط", "wrong order"}) or ("wrong" in normalized and any(word in normalized for word in {"order", "item", "product", "food"})):
             return "wrong_order"
         if any(normalize_text(term) in normalized for term in {"ناقص", "missing"}):
             return "missing"
@@ -900,6 +909,16 @@ class ChatService:
                 continue
             kept.append(char)
         return "".join(kept)
+
+    @staticmethod
+    def _sanitize_english_apologies(reply: str) -> str:
+        pattern = re.compile(r"(?i)\b(?:maalish|maalesh|ma'alesh|malesh)\b")
+        sanitized = pattern.sub("Sorry", reply)
+        sanitized = sanitized.replace("معلش", "Sorry")
+        
+        # In case the replacement created double sorry like "Sorry, Sorry",
+        # clean it up nicely, but let's be safe.
+        return sanitized
 
     @staticmethod
     def _ensure_natural_reply_direction(reply: str, customer_language: str) -> str:
