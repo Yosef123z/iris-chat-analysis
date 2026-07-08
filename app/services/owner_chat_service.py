@@ -269,10 +269,21 @@ def _classify_intent(message: str) -> str:
     ):
         return INTENT_COMMON_ISSUES
 
+    # Extract order/ticket signals early to prevent MENU_PRICE swallowing 'كام' questions
+    is_order = has(
+        "order", "orders", "request", "requests",
+        "طلب", "طلبات", "اوردر",
+    )
+    is_ticket = has(
+        "ticket", "tickets", "complaint", "complaints",
+        "تذكره", "تذكرة", "تذاكر", "شكوى", "شكاوى",
+    )
+
     # ------------------------------------------------------------------ #
     # 3. MENU_PRICE — before MENU_LIST                                    #
+    # Guard against order/ticket questions that use 'how much' or 'كام'   #
     # ------------------------------------------------------------------ #
-    if has(
+    if not is_order and not is_ticket and has(
         "price", "cost", "how much", "how much is", "what is the price",
         "price of", "cost of", "item price", "menu price", "how much does",
         # Arabic
@@ -280,12 +291,22 @@ def _classify_intent(message: str) -> str:
     ):
         return INTENT_MENU_PRICE
 
+    # Shared generic menu list signals to exclude from specific item intents
+    _menu_list_signals = (
+        "on the menu", "in the menu", "on your menu",
+        "what do you have", "what do you offer",
+        "what do you sell", "all items", "list",
+        "في المنيو", "على المنيو", "عندك ايه", "عندي ايه",
+        "موجود ايه", "الاصناف", "الاطباق",
+    )
+
     # ------------------------------------------------------------------ #
     # 4. MENU_AVAILABILITY — before MENU_LIST                             #
     # Only trigger when NOT asking about 'risk level' or 'what is on'     #
     # ------------------------------------------------------------------ #
-    # Guard: 'risk level' should not match 'level' under availability
-    if not has("risk level", "risk") and has(
+    # Guard: 'risk level' should not match 'level' under availability,
+    # and generic list signals should not match 'do you have' / 'عندك'
+    if not has("risk level", "risk") and not any(s in n for s in _menu_list_signals) and has(
         "is it available", "do you have",
         "in stock", "out of stock",
         # Arabic
@@ -295,21 +316,13 @@ def _classify_intent(message: str) -> str:
         return INTENT_MENU_AVAILABILITY
     # 'available' / 'availability' by themselves (English) — but not when preceded by 'not'
     # or when the question is about a risk/report context
-    if has("available", "availability") and not has("risk", "report", "recommendation"):
+    if has("available", "availability") and not has("risk", "report", "recommendation") and not any(s in n for s in _menu_list_signals):
         return INTENT_MENU_AVAILABILITY
 
     # ------------------------------------------------------------------ #
     # 5. MENU_DESCRIPTION — only when asking about a SPECIFIC item,      #
     #    NOT when asking 'what is on the menu' / 'what is available'      #
     # ------------------------------------------------------------------ #
-    # Exclude generic menu-list phrases from MENU_DESCRIPTION
-    _menu_list_signals = (
-        "on the menu", "in the menu", "on your menu",
-        "do you have", "what do you have", "what do you offer",
-        "what do you sell", "all items", "list",
-        "في المنيو", "على المنيو", "عندك ايه", "عندي ايه",
-        "موجود ايه", "الاصناف", "الاطباق",
-    )
     if has(
         "describe", "description",
         "what contain", "what's in", "whats in",
@@ -369,10 +382,6 @@ def _classify_intent(message: str) -> str:
     # ------------------------------------------------------------------ #
     # 9. Orders — timeframe sub-intents                                   #
     # ------------------------------------------------------------------ #
-    is_order = has(
-        "order", "orders", "request", "requests",
-        "طلب", "طلبات", "اوردر",
-    )
     if is_order:
         if has("today", "النهارده", "اليوم"):
             return INTENT_ORDERS_TODAY
@@ -391,10 +400,6 @@ def _classify_intent(message: str) -> str:
     # ------------------------------------------------------------------ #
     # 10. Tickets — sub-intents                                           #
     # ------------------------------------------------------------------ #
-    is_ticket = has(
-        "ticket", "tickets", "complaint", "complaints",
-        "تذكره", "تذاكر", "شكوى", "شكاوى",
-    )
     if is_ticket:
         if has("escalat", "مرفوع", "متصاعد"):
             return INTENT_TICKETS_ESCALATED
@@ -460,16 +465,20 @@ def _build_deterministic_answer(
             return _answer_menu_list(items, is_arabic), [_DS_MENU], "high"
 
         if intent == INTENT_MENU_PRICE:
-            return _answer_menu_price(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_price(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_AVAILABILITY:
-            return _answer_menu_availability(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_availability(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_DESCRIPTION:
-            return _answer_menu_description(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_description(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
         if intent == INTENT_MENU_CATEGORY:
-            return _answer_menu_category(message, items, is_arabic), [_DS_MENU], "high"
+            ans = _answer_menu_category(message, items, is_arabic)
+            return (ans, [_DS_MENU], "high") if ans else (None, [], "low")
 
     # ------------------------------------------------------------------ #
     # FAQ intents                                                         #
@@ -487,7 +496,8 @@ def _build_deterministic_answer(
             return f"Available FAQ topics: {', '.join(questions)}.", [_DS_FAQ], "high"
 
         # FAQ_ANSWER — find best match
-        return _answer_faq(message, faqs, is_arabic), [_DS_FAQ], "high"
+        ans = _answer_faq(message, faqs, is_arabic)
+        return (ans, [_DS_FAQ], "high") if ans else (None, [], "low")
 
     # ------------------------------------------------------------------ #
     # Order intents                                                       #
@@ -613,10 +623,10 @@ def _answer_menu_list(items: list[dict[str, Any]], is_arabic: bool) -> str:
 
 def _answer_menu_price(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     price = item.get("price")
     if price is None:
@@ -630,10 +640,10 @@ def _answer_menu_price(
 
 def _answer_menu_availability(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     is_avail = bool(item.get("isAvailable", True))
     if is_arabic:
@@ -645,10 +655,10 @@ def _answer_menu_availability(
 
 def _answer_menu_description(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     desc = str(item.get("description", "")).strip()
     if not desc:
@@ -662,10 +672,10 @@ def _answer_menu_description(
 
 def _answer_menu_category(
     message: str, items: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     item = _find_menu_item(message, items)
     if item is None:
-        return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+        return None
     name = str(item.get("name", "")).strip()
     cat = str(item.get("category", "")).strip()
     if not cat:
@@ -679,7 +689,7 @@ def _answer_menu_category(
 
 def _answer_faq(
     message: str, faqs: list[dict[str, Any]], is_arabic: bool
-) -> str:
+) -> Optional[str]:
     q_norm = _normalize_text(message)
     best_match: dict[str, Any] | None = None
     best_ratio = 0.0
@@ -693,7 +703,7 @@ def _answer_faq(
         answer = str(best_match.get("answer", "")).strip()
         if answer:
             return answer
-    return _NO_DATA_REPLY_AR if is_arabic else _NO_DATA_REPLY_EN
+    return None
 
 
 def _answer_best_sellers(items: list[dict[str, Any]], is_arabic: bool) -> str:
